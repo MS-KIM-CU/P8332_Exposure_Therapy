@@ -12,3 +12,38 @@ library(lubridate)
 library(tidyr)
 ```
 
+### Cleaning precipitation data files: 
+```{r}
+# path to .rds files
+file_list <- list.files(path = "datasets/", pattern = "\\.rds$", full.names = TRUE)
+
+# read and combine the files
+combined_ppt <- file_list |> 
+  lapply(readRDS) |> 
+  bind_rows()
+
+# filter by NYC counties (FIPS)
+nyc_fips <- c(36005, 36047, 36061, 36081, 36085)
+# fips for bronx, brooklyn, manhattan, queens, staten island (respectively)
+
+# create a combined 'date' column
+nyc_precip <- combined_ppt |> 
+  janitor::clean_names() |> 
+  filter(fips %in% nyc_fips) |> 
+  mutate(date = make_date(year, month, day))
+
+# check for the ppt distribution and any extremes
+summary(nyc_precip$ppt)
+
+# add borough cateogory with actual names
+nyc_precip <- nyc_precip |> 
+  mutate(borough = case_when(
+    fips == 36061 ~ "Manhattan",
+    fips == 36047 ~ "Brooklyn",
+    fips == 36081 ~ "Queens",
+    fips == 36085 ~ "Bronx",
+    fips == 36005 ~ "Staten Island"
+  ))  |> 
+  relocate(borough, .after = fips)
+```
+`ppt` represents the daily mean precipitation in millimeters. There were no NA values in the dataset. I checked the range of precipitation values to ensure that there are no weird or extreme values. All `ppt` values seem reasonable. 
