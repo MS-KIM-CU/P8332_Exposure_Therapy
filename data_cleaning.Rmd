@@ -35,7 +35,7 @@ nyc_precip <- combined_ppt |>
 # check for the ppt distribution and any extremes
 summary(nyc_precip$ppt)
 
-# add borough cateogory with actual names
+# add borough category with actual names
 nyc_precip <- nyc_precip |> 
   mutate(borough = case_when(
     fips == 36061 ~ "Manhattan",
@@ -45,5 +45,6 @@ nyc_precip <- nyc_precip |>
     fips == 36005 ~ "Staten Island"
   ))  |> 
   relocate(borough, .after = fips)
+
 ```
-`ppt` represents the daily mean precipitation in millimeters. There were no NA values in the dataset. I checked the range of precipitation values to ensure that there are no weird or extreme values. All `ppt` values seem reasonable. 
+`ppt` represents the daily mean precipitation in millimeters. There were no NA values or duplicatees in the dataset. I checked the range of precipitation values to ensure that there are no weird or extreme values. All `ppt` values seem reasonable. 
