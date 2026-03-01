@@ -1,0 +1,638 @@
+---
+title: "Project Data Visualization"
+output: html_document
+date: "2026-03-01"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(lubridate)
+library(ggplot2)
+library(dplyr)
+library(here)
+library(readr)
+library(splines)
+library(mgcv)
+```
+
+## Importing cleaned + merged data
+```{r data}
+data <- read.csv("asthma_precip_clean.csv")
+```
+
+## Categorizing dates by seasons, years, months, day of the week
+
+```{r time variables, echo=TRUE}
+##Convert Date Variable
+data$date <- as.Date(data$date)
+
+#Create season variable
+data <- data %>%
+  mutate(
+    year = year(date),
+    month = month(date),
+    season = case_when(
+      month %in% c(12, 1, 2) ~ "Winter",
+      month %in% c(3, 4, 5) ~ "Spring",
+      month %in% c(6, 7, 8) ~ "Summer",
+      month %in% c(9, 10, 11) ~ "Fall"
+    )
+  )
+
+#Create Year var, Month var, and Day of Week var.
+data <- data %>%
+  mutate(
+    date = as.Date(date),
+
+    # Year
+    year = year(date),
+
+    # Month (numeric and labeled)
+    month_num = month(date),
+    month = month(date, label = TRUE, abbr = FALSE),
+
+    # Day of week (ordered Monday–Sunday)
+    day_of_week = wday(date, label = TRUE, abbr = FALSE),
+    day_of_week = factor(day_of_week,
+                         levels = c("Monday", "Tuesday", "Wednesday",
+                                    "Thursday", "Friday",
+                                    "Saturday", "Sunday"))
+  )
+```
+
+## Summary statistics (mean, sd, median, min, max, quartiles) of Asthma ER admissions and PPT by borough and time variables
+
+```{r summary statistics, echo=FALSE}
+#Citywide and all time data
+data %>%
+  summarise(
+    # ASTHMA
+    mean_asthma   = mean(asthma_er_count, na.rm = TRUE),
+    sd_asthma     = sd(asthma_er_count, na.rm = TRUE),
+    min_asthma    = min(asthma_er_count, na.rm = TRUE),
+    Q1_asthma     = quantile(asthma_er_count, 0.25, na.rm = TRUE),
+    median_asthma = median(asthma_er_count, na.rm = TRUE),
+    Q3_asthma     = quantile(asthma_er_count, 0.75, na.rm = TRUE),
+    max_asthma    = max(asthma_er_count, na.rm = TRUE),
+    IQR_asthma    = IQR(asthma_er_count, na.rm = TRUE),
+
+    # PRECIPITATION
+    mean_ppt   = mean(ppt, na.rm = TRUE),
+    sd_ppt     = sd(ppt, na.rm = TRUE),
+    min_ppt    = min(ppt, na.rm = TRUE),
+    Q1_ppt     = quantile(ppt, 0.25, na.rm = TRUE),
+    median_ppt = median(ppt, na.rm = TRUE),
+    Q3_ppt     = quantile(ppt, 0.75, na.rm = TRUE),
+    max_ppt    = max(ppt, na.rm = TRUE),
+    IQR_ppt    = IQR(ppt, na.rm = TRUE)
+  )
+
+#By borough
+data %>%
+  group_by(borough) %>%
+  summarise(
+    # ASTHMA
+    mean_asthma   = mean(asthma_er_count, na.rm = TRUE),
+    sd_asthma     = sd(asthma_er_count, na.rm = TRUE),
+    min_asthma    = min(asthma_er_count, na.rm = TRUE),
+    Q1_asthma     = quantile(asthma_er_count, 0.25, na.rm = TRUE),
+    median_asthma = median(asthma_er_count, na.rm = TRUE),
+    Q3_asthma     = quantile(asthma_er_count, 0.75, na.rm = TRUE),
+    max_asthma    = max(asthma_er_count, na.rm = TRUE),
+    IQR_asthma    = IQR(asthma_er_count, na.rm = TRUE),
+
+    # PRECIPITATION
+    mean_ppt   = mean(ppt, na.rm = TRUE),
+    sd_ppt     = sd(ppt, na.rm = TRUE),
+    min_ppt    = min(ppt, na.rm = TRUE),
+    Q1_ppt     = quantile(ppt, 0.25, na.rm = TRUE),
+    median_ppt = median(ppt, na.rm = TRUE),
+    Q3_ppt     = quantile(ppt, 0.75, na.rm = TRUE),
+    max_ppt    = max(ppt, na.rm = TRUE),
+    IQR_ppt    = IQR(ppt, na.rm = TRUE)
+  )
+
+#By Season
+data %>%
+  group_by(season) %>%
+  summarise(
+    # ASTHMA
+    mean_asthma   = mean(asthma_er_count, na.rm = TRUE),
+    sd_asthma     = sd(asthma_er_count, na.rm = TRUE),
+    min_asthma    = min(asthma_er_count, na.rm = TRUE),
+    Q1_asthma     = quantile(asthma_er_count, 0.25, na.rm = TRUE),
+    median_asthma = median(asthma_er_count, na.rm = TRUE),
+    Q3_asthma     = quantile(asthma_er_count, 0.75, na.rm = TRUE),
+    max_asthma    = max(asthma_er_count, na.rm = TRUE),
+    IQR_asthma    = IQR(asthma_er_count, na.rm = TRUE),
+
+    # PRECIPITATION
+    mean_ppt   = mean(ppt, na.rm = TRUE),
+    sd_ppt     = sd(ppt, na.rm = TRUE),
+    min_ppt    = min(ppt, na.rm = TRUE),
+    Q1_ppt     = quantile(ppt, 0.25, na.rm = TRUE),
+    median_ppt = median(ppt, na.rm = TRUE),
+    Q3_ppt     = quantile(ppt, 0.75, na.rm = TRUE),
+    max_ppt    = max(ppt, na.rm = TRUE),
+    IQR_ppt    = IQR(ppt, na.rm = TRUE)
+  )
+
+#By year
+data %>%
+  group_by(year) %>%
+  summarise(
+    # ASTHMA
+    mean_asthma   = mean(asthma_er_count, na.rm = TRUE),
+    sd_asthma     = sd(asthma_er_count, na.rm = TRUE),
+    min_asthma    = min(asthma_er_count, na.rm = TRUE),
+    Q1_asthma     = quantile(asthma_er_count, 0.25, na.rm = TRUE),
+    median_asthma = median(asthma_er_count, na.rm = TRUE),
+    Q3_asthma     = quantile(asthma_er_count, 0.75, na.rm = TRUE),
+    max_asthma    = max(asthma_er_count, na.rm = TRUE),
+    IQR_asthma    = IQR(asthma_er_count, na.rm = TRUE),
+
+    # PRECIPITATION
+    mean_ppt   = mean(ppt, na.rm = TRUE),
+    sd_ppt     = sd(ppt, na.rm = TRUE),
+    min_ppt    = min(ppt, na.rm = TRUE),
+    Q1_ppt     = quantile(ppt, 0.25, na.rm = TRUE),
+    median_ppt = median(ppt, na.rm = TRUE),
+    Q3_ppt     = quantile(ppt, 0.75, na.rm = TRUE),
+    max_ppt    = max(ppt, na.rm = TRUE),
+    IQR_ppt    = IQR(ppt, na.rm = TRUE)
+  )
+
+#By month
+data %>%
+  group_by(month_num) %>%
+  summarise(
+    # ASTHMA
+    mean_asthma   = mean(asthma_er_count, na.rm = TRUE),
+    sd_asthma     = sd(asthma_er_count, na.rm = TRUE),
+    min_asthma    = min(asthma_er_count, na.rm = TRUE),
+    Q1_asthma     = quantile(asthma_er_count, 0.25, na.rm = TRUE),
+    median_asthma = median(asthma_er_count, na.rm = TRUE),
+    Q3_asthma     = quantile(asthma_er_count, 0.75, na.rm = TRUE),
+    max_asthma    = max(asthma_er_count, na.rm = TRUE),
+    IQR_asthma    = IQR(asthma_er_count, na.rm = TRUE),
+
+    # PRECIPITATION
+    mean_ppt   = mean(ppt, na.rm = TRUE),
+    sd_ppt     = sd(ppt, na.rm = TRUE),
+    min_ppt    = min(ppt, na.rm = TRUE),
+    Q1_ppt     = quantile(ppt, 0.25, na.rm = TRUE),
+    median_ppt = median(ppt, na.rm = TRUE),
+    Q3_ppt     = quantile(ppt, 0.75, na.rm = TRUE),
+    max_ppt    = max(ppt, na.rm = TRUE),
+    IQR_ppt    = IQR(ppt, na.rm = TRUE)
+  )
+
+#By day of the week
+data %>%
+  group_by(day_of_week) %>%
+  summarise(
+    # ASTHMA
+    mean_asthma   = mean(asthma_er_count, na.rm = TRUE),
+    sd_asthma     = sd(asthma_er_count, na.rm = TRUE),
+    min_asthma    = min(asthma_er_count, na.rm = TRUE),
+    Q1_asthma     = quantile(asthma_er_count, 0.25, na.rm = TRUE),
+    median_asthma = median(asthma_er_count, na.rm = TRUE),
+    Q3_asthma     = quantile(asthma_er_count, 0.75, na.rm = TRUE),
+    max_asthma    = max(asthma_er_count, na.rm = TRUE),
+    IQR_asthma    = IQR(asthma_er_count, na.rm = TRUE),
+
+    # PRECIPITATION
+    mean_ppt   = mean(ppt, na.rm = TRUE),
+    sd_ppt     = sd(ppt, na.rm = TRUE),
+    min_ppt    = min(ppt, na.rm = TRUE),
+    Q1_ppt     = quantile(ppt, 0.25, na.rm = TRUE),
+    median_ppt = median(ppt, na.rm = TRUE),
+    Q3_ppt     = quantile(ppt, 0.75, na.rm = TRUE),
+    max_ppt    = max(ppt, na.rm = TRUE),
+    IQR_ppt    = IQR(ppt, na.rm = TRUE)
+  )
+
+
+```
+## Histograms (distributions of asthma and ppt by borough and time variables)
+
+```{r histograms, echo=FALSE}
+ggplot(data, aes(x = asthma_er_count)) +
+  geom_histogram(bins = 30) +
+  theme_minimal() +
+  labs(title = "Distribution of Daily Asthma ER Visits",
+       x = "Asthma ER Count",
+       y = "Frequency")
+
+ggplot(data, aes(x = ppt)) +
+  geom_histogram(bins = 30) +
+  theme_minimal() +
+  labs(title = "Distribution of Daily Precipitation",
+       x = "Daily Precipitation",
+       y = "Frequency")
+
+#data is right skewed (let's log transform this)
+data <- data %>%
+  mutate(log_ppt = log(ppt + 1))
+ggplot(data, aes(x = log_ppt)) +
+  geom_histogram(bins = 30) +
+  theme_minimal() +
+  labs(title = "Distribution of Daily Precipitation",
+       x = "Log Precipitation",
+       y = "Frequency")
+#data still skewed
+```
+
+# Boxplots of Asthma and PPT grouped by borough, seasons, years, months, day of the week (effect modifications analysis)
+
+```{r boxplots_asthmappt, echo=FALSE}
+
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+
+# Make sure variables are factors
+data <- data %>%
+  mutate(
+    year = factor(year),
+    month = factor(month, levels = 1:12),
+    season = factor(season, levels = c("Winter","Spring","Summer","Fall")),
+    day_of_week = factor(day_of_week, levels = c("Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"))
+  )
+
+# 1. Asthma ER Visits by Borough
+ggplot(data, aes(x = borough, y = asthma_er_count)) +
+  geom_boxplot(fill = "lightblue") +
+  theme_minimal() +
+  labs(
+    title = "Asthma ER Visits by Borough",
+    x = "Borough",
+    y = "Asthma ER Count"
+  )
+
+# 2. Precipitation by Borough
+ggplot(data, aes(x = borough, y = ppt)) +
+  geom_boxplot(fill = "lightgreen") +
+  theme_minimal() +
+  labs(
+    title = "Daily Precipitation by Borough",
+    x = "Borough",
+    y = "Precipitation (inches)"
+  )
+
+# 3. Asthma ER Visits by Season
+ggplot(data, aes(x = season, y = asthma_er_count)) +
+  geom_boxplot(fill = "lightblue") +
+  theme_minimal() +
+  labs(
+    title = "Asthma ER Visits by Season",
+    x = "Season",
+    y = "Asthma ER Count"
+  )
+
+# 4. Precipitation by Season
+ggplot(data, aes(x = season, y = ppt)) +
+  geom_boxplot(fill = "lightgreen") +
+  theme_minimal() +
+  labs(
+    title = "Daily Precipitation by Season",
+    x = "Season",
+    y = "Precipitation (inches)"
+  )
+
+# 5. Asthma ER Visits by Year
+ggplot(data, aes(x = year, y = asthma_er_count)) +
+  geom_boxplot(fill = "lightblue") +
+  theme_minimal() +
+  labs(
+    title = "Asthma ER Visits by Year",
+    x = "Year",
+    y = "Asthma ER Count"
+  )
+
+# 6. Precipitation by Year
+ggplot(data, aes(x = year, y = ppt)) +
+  geom_boxplot(fill = "lightgreen") +
+  theme_minimal() +
+  labs(
+    title = "Daily Precipitation by Year",
+    x = "Year",
+    y = "Precipitation (inches)"
+  )
+
+# 7. Asthma ER Visits by Month
+ggplot(data, aes(x = factor(month_num), y = asthma_er_count)) +
+  geom_boxplot(fill = "lightblue") +
+  theme_minimal() +
+  labs(
+    title = "Asthma ER Visits by Month",
+    x = "Month",
+    y = "Asthma ER Count"
+  )
+
+# 8. Precipitation by Month
+ggplot(data, aes(x = factor(month_num), y = ppt)) +
+  geom_boxplot(fill = "lightgreen") +
+  theme_minimal() +
+  labs(
+    title = "Daily Precipitation by Month",
+    x = "Month",
+    y = "Precipitation (inches)"
+  )
+
+# 9. Asthma ER Visits by Day of Week
+ggplot(data, aes(x = day_of_week, y = asthma_er_count)) +
+  geom_boxplot(fill = "lightblue") +
+  theme_minimal() +
+  labs(
+    title = "Asthma ER Visits by Day of Week",
+    x = "Day of Week",
+    y = "Asthma ER Count"
+  )
+
+# 10. Precipitation by Day of Week
+ggplot(data, aes(x = day_of_week, y = ppt)) +
+  geom_boxplot(fill = "lightgreen") +
+  theme_minimal() +
+  labs(
+    title = "Daily Precipitation by Day of Week",
+    x = "Day of Week",
+    y = "Precipitation (inches)"
+  )
+
+```
+
+# Box plots of Asthma visits by time variables, stratified by borough and Box plots of Asthma visits by boroughs, stratified by seasons and year
+```{r box plots, echo=FALSE}
+# Asthma ER visits by seasons, stratified by Borough
+ggplot(data, aes(x = season, y = asthma_er_count)) +
+  geom_boxplot(fill = "lightblue") +
+  facet_wrap(~borough) +
+  theme_minimal() +
+  labs(
+    title = "Asthma ER Visits by seasons, Stratified by Borough",
+    x = "Month",
+    y = "Asthma ER Visits"
+  )
+
+# Asthma ER visits by year, stratified by Borough
+ggplot(data, aes(x = factor(year), y = asthma_er_count)) +
+  geom_boxplot(fill = "lightblue") +
+  facet_wrap(~borough) +
+  theme_minimal() +
+  labs(
+    title = "Asthma ER Visits by Year, Stratified by Borough",
+    x = "Year",
+    y = "Asthma ER Visits"
+  )
+
+# Asthma ER visits by Month, stratified by Borough
+ggplot(data, aes(x = factor(month_num), y = asthma_er_count)) +
+  geom_boxplot(fill = "lightblue") +
+  facet_wrap(~borough) +
+  theme_minimal() +
+  labs(
+    title = "Asthma ER Visits by Month, Stratified by Borough",
+    x = "Month",
+    y = "Asthma ER Visits"
+  )
+
+# Asthma ER visits by day of the week, stratified by Borough
+ggplot(data, aes(x = day_of_week, y = asthma_er_count)) +
+  geom_boxplot(fill = "lightblue") +
+  facet_wrap(~borough) +
+  theme_minimal() +
+  labs(
+    title = "Asthma ER Visits by day of week, Stratified by Borough",
+    x = "Month",
+    y = "Asthma ER Visits"
+  )
+
+# Asthma ER visits by borough, stratified by seasons
+ggplot(data, aes(x = borough, y = asthma_er_count)) +
+  geom_boxplot(fill = "lightblue") +
+  facet_wrap(~season) +
+  theme_minimal() +
+  labs(
+    title = "Asthma ER Visits by boroughs, Stratified by season",
+    x = "Season",
+    y = "Asthma ER Visits"
+  )
+
+# Asthma ER visits by borough, stratified by year
+ggplot(data, aes(x = borough, y = asthma_er_count)) +
+  geom_boxplot(fill = "lightblue") +
+  facet_wrap(~year) +
+  theme_minimal() +
+  labs(
+    title = "Asthma ER Visits by year, Stratified by Borough",
+    x = "Year",
+    y = "Asthma ER Visits"
+  )
+```
+
+# Scatterplots using log transformed data and non log transformed
+
+```{r scatterp, echo=FALSE}
+#create separate dataset for citywide data 
+city_data <- data %>%
+  group_by(date) %>%
+  summarise(
+    total_asthma = sum(asthma_er_count, na.rm = TRUE),
+    mean_ppt = mean(ppt, na.rm = TRUE),
+    mean_log_ppt = log(mean_ppt)
+  )
+
+#city wide scatterplot
+ggplot(city_data, aes(x = mean_ppt, y = total_asthma)) +
+  geom_point(alpha = 0.4) +
+  geom_smooth(method = "loess") +
+  theme_minimal() +
+  labs(title = "Precipitation vs Asthma ED Visits",
+       x = "Mean Daily Precipitation",
+       y = "Total Asthma ED Visits")
+
+#city wide log scatterplot
+ggplot(city_data, aes(x = mean_log_ppt, y = total_asthma)) +
+  geom_point(alpha = 0.4) +
+  geom_smooth(method = "loess") +
+  theme_minimal() +
+  labs(title = "LOG Precipitation vs Asthma ED Visits",
+       x = "Mean Daily LOG Precipitation",
+       y = "Total Asthma ED Visits")
+
+#scatterplot with trend lines of each borough
+ggplot(data, aes(x = ppt, y = asthma_er_count, color = borough)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "loess", se = FALSE) +
+  theme_minimal() +
+  labs(
+    title = "Precipitation vs Asthma ER Visits with Trend by Borough",
+    x = "Daily Precipitation (inches)",
+    y = "Asthma ER Count",
+    color = "Borough"
+  )
+
+#log scatterplot with trend lines of each borough
+ggplot(data, aes(x = log_ppt, y = asthma_er_count, color = borough)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "loess", se = FALSE) +
+  theme_minimal() +
+  labs(
+    title = "LOG Precipitation vs Asthma ER Visits with Trend by Borough",
+    x = "Daily LOG Precipitation",
+    y = "Asthma ER Count",
+    color = "Borough"
+  )
+
+#scatterplot by seasons
+ggplot(data, aes(x = ppt, y = asthma_er_count)) +
+  geom_point(alpha = 0.5, color = "darkorange") +
+  geom_smooth(method = "loess", se = FALSE, color = "blue") +
+  facet_wrap(~season) +
+  theme_minimal() +
+  labs(
+    title = "Precipitation vs Asthma ER Visits by Season",
+    x = "Daily Precipitation (inches)",
+    y = "Asthma ER Count"
+  )
+
+#log scatterplot by seasons
+ggplot(data, aes(x = log_ppt, y = asthma_er_count)) +
+  geom_point(alpha = 0.5, color = "darkorange") +
+  geom_smooth(method = "loess", se = FALSE, color = "blue") +
+  facet_wrap(~season) +
+  theme_minimal() +
+  labs(
+    title = "LOG Precipitation vs Asthma ER Visits by Season",
+    x = "Daily LOG Precipitation",
+    y = "Asthma ER Count"
+  )
+
+#scatterplot by months 
+ggplot(data, aes(x = ppt, y = asthma_er_count, color = factor(month_num))) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "loess", se = FALSE) +
+  theme_minimal() +
+  labs(
+    title = "Precipitation vs Asthma ER Visits Colored by Month",
+    x = "Daily Precipitation (inches)",
+    y = "Asthma ER Count",
+    color = "Month"
+  )
+
+#log scatterplot by months 
+ggplot(data, aes(x = log_ppt, y = asthma_er_count, color = factor(month_num))) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "loess", se = FALSE) +
+  theme_minimal() +
+  labs(
+    title = "LOG Precipitation vs Asthma ER Visits Colored by Month",
+    x = "Daily LOG Precipitation",
+    y = "Asthma ER Count",
+    color = "Month"
+  )
+
+#scatterplot using log transformed ppt
+ggplot(data, aes(x = log_ppt, y = asthma_er_count)) +
+  geom_point(alpha = 0.5, color = "darkgreen") +
+  geom_smooth(method = "loess", se = FALSE, color = "red") +
+  theme_minimal() +
+  labs(
+    title = "Log-Transformed Precipitation vs Asthma ER Visits",
+    x = "Log(Daily Precipitation) (zeros = 0)",
+    y = "Asthma ER Count"
+  )
+```
+
+# Time series analysis 
+
+```{r timeseries, echo=TRUE}
+# Plot daily city total asthma over time
+ggplot(city_data, aes(x = date, y = total_asthma)) +
+  geom_line() +
+  theme_minimal() +
+  labs(title = "Daily Asthma ER Visits in NYC (2016–2019)",
+       x = "Date",
+       y = "Total Asthma ER Visits")
+
+# Plot daily city average precipitation over time
+ggplot(city_data, aes(x = date, y = mean_ppt)) +
+  geom_line(color = "blue") +
+  theme_minimal() +
+  labs(title = "Daily Precipitation in NYC (2016–2019)",
+       x = "Date",
+       y = "Mean Daily Precipitation")
+
+#creating year_num variable in the city wide data set
+city_data <- city_data %>%
+  mutate(
+    year = year(date),
+    year_num = year - 2015,
+    month = month(date)
+  )
+
+city_data <- city_data %>%
+  arrange(date) %>%
+  mutate(
+    time = as.numeric(date - min(date))
+  )
+
+#calculating the number of years in dataset to determine degrees of freedom 
+yr_num <- length(unique(year(city_data$date)))
+
+#smoothing plot
+ggplot(city_data, aes(date,total_asthma))+ 
+  geom_smooth(color = "yellow", method = lm, formula = y ~ ns(x, df= 14)) +
+  geom_smooth(color = "pink", method = lm, formula = y ~ ns(x, df= 4)) 
+
+
+ggplot(city_data, aes(date,mean_ppt))+ 
+  geom_smooth(color = "orange", method = lm, formula = y ~ ns(x, df= 16)) +
+  geom_smooth(color = "purple", method = lm, formula = y ~ ns(x, df= 4)) 
+
+#Poisson model
+mod.ts.p <- glm(
+  total_asthma ~
+    mean_ppt +
+    factor(month) +
+    ns(date, df = 16),
+  family = poisson(),
+  data = city_data)
+
+summary(mod.ts.p)
+mean(city_data$total_asthma)
+var(city_data$total_asthma)
+
+#Quasi poisson model
+mod.ts.qp <- glm(
+  total_asthma ~
+    mean_ppt +
+    factor(month) +
+    ns(date, df = 16),
+  family = quasipoisson(),
+  data = city_data
+)
+summary(mod.ts.qp)$dispersion
+
+#Poisson is severely overdispersed
+
+```
+
+
+# PPT and Asthma Lag Exploration
+
+```{r lags, echo=TRUE}
+
+# Plot Autocorrelation
+acf(city_data$mean_ppt, lag.max = 7)
+acf(city_data$mean_ppt, lag.max = 21)
+#No weekly correlation of rainfall
+
+acf(city_data$total_asthma, lag.max = 7)
+acf(city_data$total_asthma, lag.max = 21)
+#Weekly trend of asthma ER visits
+
+```
+
