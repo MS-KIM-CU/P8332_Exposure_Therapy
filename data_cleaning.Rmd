@@ -47,4 +47,4 @@ nyc_precip <- nyc_precip |>
   relocate(borough, .after = fips)
 
 ```
-`ppt` represents the daily mean precipitation in millimeters. There were no NA values or duplicatees in the dataset. I checked the range of precipitation values to ensure that there are no weird or extreme values. All `ppt` values seem reasonable. 
+`ppt` represents the daily mean precipitation in millimeters. There were no NA values or duplicates in the dataset. I checked the range of precipitation values to ensure that there are no weird or extreme values. All `ppt` values seem reasonable. 
