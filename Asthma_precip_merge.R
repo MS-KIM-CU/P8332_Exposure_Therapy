@@ -28,11 +28,11 @@ library(janitor)
   #bind_rows()
 
 
-# Reading precipitation files manually bc I suck with gihub
-ppt_2016 <- readRDS("weighted_area_raster_fips_ppt_daily_2016.rds")
-ppt_2017 <- readRDS("weighted_area_raster_fips_ppt_daily_2017.rds")
-ppt_2018 <- readRDS("weighted_area_raster_fips_ppt_daily_2018.rds")
-ppt_2019 <- readRDS("weighted_area_raster_fips_ppt_daily_2019.rds")
+# Reading precipitation files manually
+ppt_2016 <- readRDS("datasets/weighted_area_raster_fips_ppt_daily_2016.rds")
+ppt_2017 <- readRDS("datasets/weighted_area_raster_fips_ppt_daily_2017.rds")
+ppt_2018 <- readRDS("datasets/weighted_area_raster_fips_ppt_daily_2018.rds")
+ppt_2019 <- readRDS("datasets/weighted_area_raster_fips_ppt_daily_2019.rds")
 
 # read and combine the files
 combined_ppt <- bind_rows(
@@ -83,7 +83,7 @@ library(lubridate)
 library(janitor)
 
 # read asthma
-asthma <- read_delim("asthma_ed_visits.csv",
+asthma <- read_delim("datasets/asthma_ed_visits.csv",
                      delim = "\t",
                      locale = locale(encoding = "UTF-16")) %>%
   clean_names()
@@ -113,5 +113,27 @@ asthma_precip <- asthma_clean %>%
             by = c("borough", "date"))
 
 write_csv(asthma_precip, "asthma_precip_clean.csv")
+
+# load daily pm 2.5 csv files
+pm25_2016 <- read.csv("datasets/dailypm25_data_2016.csv")
+pm25_2017 <- read.csv("datasets/dailypm25_data_2017.csv")
+pm25_2018 <- read.csv("datasets/dailypm25_data_2018.csv")
+pm25_2019 <- read.csv("datasets/dailypm25_data_2019.csv")
+
+# combine pm25 files
+pm25_all <- rbind(pm25_2016, pm25_2017, pm25_2018, pm25_2019) |> 
+  janitor::clean_names()
+
+# filter for boroughs we want 
+# (Kings aka Brooklyn, New York aka Manhattan, Queens, Bronx, 
+# and Richmond aka Staten Island)
+
+selected_counties <- c("New York", "Kings", "Queens", "Bronx", 
+                       "Richmond County")
+
+pm25_all <- pm25_all |> 
+  dplyr::filter(county %in% selected_counties)
+
+
 
 ###################
