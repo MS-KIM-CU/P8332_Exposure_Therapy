@@ -132,8 +132,13 @@ selected_counties <- c("New York", "Kings", "Queens", "Bronx",
                        "Richmond County")
 
 pm25_all <- pm25_all |> 
-  dplyr::filter(county %in% selected_counties)
+  filter(county %in% selected_counties)
 
-
+# take the average pm25 daily mean conc for each county
+# across the sites per day
+pm25_all <- pm25_all |>
+  dplyr::group_by(county, date, state_fips_code, county_fips_code) |>
+  dplyr::summarise(pm25 = mean(daily_mean_pm2_5_concentration, 
+                               na.rm = TRUE), .groups = "drop")
 
 ###################
