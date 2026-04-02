@@ -1,0 +1,51 @@
+---
+title: "Maya's Model Building"
+author: "Maya Arnott"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Libraries and load in our data
+```{r}
+library(MASS)
+library(lmtest)
+library(car)
+library(ggplot2)
+library(marginaleffects)
+library(AER)
+library(lubridate)
+
+asthma_precip_pm25 <- read_csv("datasets/asthma_precip_pm25_clean.csv")
+
+```
+
+Prepare the variables
+```{r}
+asthma_precip_pm25 <- asthma_precip_pm25 |>
+  dplyr::mutate(
+    date        = as.Date(date),
+    borough     = as.factor(borough),
+    year        = as.factor(lubridate::year(date)),
+    day_of_week = as.factor(lubridate::wday(date, label = TRUE)),
+    season      = as.factor(dplyr::case_when(
+      lubridate::month(date) %in% c(12, 1, 2)  ~ "Winter",
+      lubridate::month(date) %in% c(3, 4, 5)   ~ "Spring",
+      lubridate::month(date) %in% c(6, 7, 8)   ~ "Summer",
+      lubridate::month(date) %in% c(9, 10, 11) ~ "Fall"
+    ))
+  )
+```
+
+Dispersion test: Poisson vs Negative Binomial Model?
+
+```{r}
+poisson_model <- glm(
+  asthma_er_count ~ ppt * borough + season + day_of_week + year + offset(log(population)),
+  data   = asthma_precip_pm25,
+  family = poisson
+)
+```
+
