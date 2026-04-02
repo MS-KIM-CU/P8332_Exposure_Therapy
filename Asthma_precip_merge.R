@@ -114,6 +114,8 @@ asthma_precip <- asthma_clean %>%
 
 write_csv(asthma_precip, "asthma_precip_clean.csv")
 
+# ----- Load and Clean PM2.5 Data -----------
+
 # load daily pm 2.5 csv files
 pm25_2016 <- read.csv("datasets/dailypm25_data_2016.csv")
 pm25_2017 <- read.csv("datasets/dailypm25_data_2017.csv")
@@ -141,4 +143,17 @@ pm25_all <- pm25_all |>
   dplyr::summarise(pm25 = mean(daily_mean_pm2_5_concentration, 
                                na.rm = TRUE), .groups = "drop")
 
-###################
+# standardize date before merging
+pm25_all <- pm25_all |>
+  mutate(date = as.Date(date, format = "%m/%d/%Y")) |> 
+  rename(borough = county)
+  
+
+# merge with precip & asthma data
+asthma_precip_pm25 <- asthma_precip |>
+    left_join(
+    pm25_all |> select(borough, date, pm25),
+    by = c("borough", "date")
+  )
+
+write_csv(asthma_precip_pm25, "datasets/asthma_precip_pm25_clean.csv")
