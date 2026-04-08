@@ -16,6 +16,7 @@ library(stringr)
 library(MASS)
 library(lmtest)
 library(car)
+library(broom)
 library(ggplot2)
 library(marginaleffects)
 library(AER)
@@ -47,9 +48,17 @@ asthma_precip_pm25 <- asthma_precip_pm25 |>
     ))
   )
 
-# create log transformed ppt var
+# create log transformed ppt and pm25 var
 asthma_precip_pm25 <- asthma_precip_pm25 |> 
-  mutate(log_ppt = log(ppt + 1))
+  mutate(
+    log_ppt = log(ppt + 1)
+  )
+
+asthma_precip_pm25 <- asthma_precip_pm25 |> 
+  mutate(
+    pm25 = if_else(pm25 < 0, 0, pm25),
+    log_pm25 = log(pm25 + 1)
+  )
 
 # create thresholds for ppt
 asthma_precip_pm25 <- asthma_precip_pm25 |>
@@ -104,22 +113,24 @@ Temperature is likely a confounder in this relationship, and should be added to 
 
 #### Scale variables
 
-I scaled `log_ppt`, `pm25`, and `temperature` because this helps mixed models converge and makes coefficients across covariates comparable.
+I scaled `log_ppt`, `log_pm25`, and `temperature` because this helps mixed models converge and makes coefficients across covariates comparable.
+
 ```{r}
 # scale variables 
 asthma_precip_pm25 <- asthma_precip_pm25 |>
   mutate(
     log_ppt_scaled = as.numeric(scale(log_ppt)),
-    pm25_scaled    = as.numeric(scale(pm25)),
+    log_pm25_scaled    = as.numeric(scale(log_pm25))
     # add temperature to scale
     )
+
 ```
 
 ## 2. Negative Binomial Model over Poisson
 ```{r}
 # poisson
 pois.model <- glm(
-  asthma_er_count ~ log_ppt_scaled + pm25_scaled + borough + season +
+  asthma_er_count ~ log_ppt_scaled + log_pm25_scaled + borough + season +
     day_of_week + year + offset(log(population)),
   family = poisson(link = "log"),
   data = asthma_precip_pm25
@@ -128,7 +139,7 @@ pois.model <- glm(
 dispersiontest(pois.model)
 ```
 
-According to the overdispersion test, there is evidence of significant overdispersion (dispersion = 2.19, p<.001), which justifies the use of a negative binomial model.
+According to the overdispersion test, there is evidence of significant overdispersion (dispersion = 2.20, p<.001), which justifies the use of a negative binomial model.
 
 ##3. ICC
 
@@ -160,7 +171,7 @@ dta_btwn <- asthma_precip_pm25 |>
   summarize(
     mean_asthma_rate = mean(asthma_rate, na.rm = TRUE),
     mean_log_ppt     = mean(log_ppt_scaled, na.rm = TRUE),
-    mean_pm25        = mean(pm25_scaled, na.rm = TRUE),
+    mean_pm25        = mean(log_pm25_scaled, na.rm = TRUE),
     .groups = "drop"
   )
 
@@ -178,7 +189,7 @@ With 2 degrees of freedom, the model has very low statistical power, which justi
 
 ```{r}
 mod.fixed <- glm.nb(
-  asthma_er_count ~ log_ppt_scaled + pm25_scaled + borough + 
+  asthma_er_count ~ log_ppt_scaled + log_pm25_scaled + borough + 
     season + day_of_week + year + offset(log(population)),
   data = asthma_precip_pm25
 )
@@ -199,13 +210,19 @@ rr_ppt <- paste0(
 rr_ppt
 ```
 
-**`log_ppt_scaled`** A 1 standard deviation increase in log precipitation is associated with a 0.8% decrease in asthma ED visit rates. This is statistically significant but indicates a very small effect on asthma ED visit rates.
+**`log_ppt_scaled`** A 1 standard deviation increase in log precipitation is associated with a 0.75% decrease in asthma ED visit rates, holding all other variables constant. This is statistically significant but indicates a very small effect on asthma ED visit rates.
 
-**`pm25_scaled`** The p-value was not significant.
+**`log_pm25_scaled`** The p-value was not significant.
 
 **Borough fixed-intercepts** All boroughs had an association with asthma ED visits that was were highly significant. Bronx had the highest asthma ED visit rate, and all other boroughs were significantly lower.
 
 **Season** All seasons had an association with asthma ED visits that was were highly significant. The summer season was highly protective and the spring season showed a slightly elevated association with asthma ED visits, possibly due to an overlap with allergy season.
+
+#### Marginal Effects plot
+```{r}
+# include a marginal effects plot for mod.fixed
+```
+
 
 ##6. Effect Modification - Borough Interaction 
 
@@ -213,14 +230,14 @@ rr_ppt
 
 # reduced model (as noted earlier)
 mod.fixed <- glm.nb(
-  asthma_er_count ~ log_ppt_scaled + pm25_scaled + borough + 
+  asthma_er_count ~ log_ppt_scaled + log_pm25_scaled + borough + 
     season + day_of_week + year + offset(log(population)),
   data = asthma_precip_pm25
 )
 
 # full model with interaction
 mod.full <- glm.nb(
-  asthma_er_count ~ log_ppt_scaled * borough + pm25_scaled + 
+  asthma_er_count ~ log_ppt_scaled * borough + log_pm25_scaled + 
     season + day_of_week + year + offset(log(population)),
   data = asthma_precip_pm25
 )
@@ -234,19 +251,20 @@ Anova(model.full, type = "III")
 
 The LRT p-value is 0.6492, which means that the interaction term does not significantly improve the model fit. Although we proved that boroughs have different baseline asthma rates, precipitation affects them similarly and the association does not differ significantly across boroughs.
 
+
 ## 7. Categorical Precipitation Sensitivity Analysis
 
 ```{r}
 
 mod.full <- glm.nb(
-  asthma_er_count ~ log_ppt_scaled + borough + pm25_scaled + 
+  asthma_er_count ~ log_ppt_scaled + borough + log_pm25_scaled + 
     season + day_of_week + year + offset(log(population)),
   data = asthma_precip_pm25
 )
 
 # categorical ppt model
 model.cat <- glm.nb(
-  asthma_er_count ~ ppt_cat + borough + pm25_scaled + season + 
+  asthma_er_count ~ ppt_cat + borough + log_pm25_scaled + season + 
     day_of_week + year + offset(log(population)), 
   data = asthma_precip_pm25
 )
@@ -339,7 +357,7 @@ asthma_model_df <- asthma_model_df |>
 
 # run model with storm lag
 model.storm.lag <- glm.nb(
-  asthma_er_count ~ log_ppt_scaled + pm25_scaled +
+  asthma_er_count ~ log_ppt_scaled + log_pm25_scaled +
     storm_event + post_storm1 + post_storm2 +
     borough + season + day_of_week + year +
     offset(log(population)),
@@ -355,7 +373,7 @@ On storm days, asthma ER visits are significantly lower. There is a 6.6% decreas
 
 ```{r}
 mod.storm.cumulative <- glm.nb(
-  asthma_er_count ~ log_ppt_scaled + pm25_scaled + storm_cum3 +
+  asthma_er_count ~ log_ppt_scaled + log_pm25_scaled + storm_cum3 +
     borough + season + day_of_week + year +
     offset(log(population)),
   data = asthma_model_df
