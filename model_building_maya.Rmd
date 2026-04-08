@@ -8,7 +8,9 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-Libraries and load in our data
+## 1. Data Prepration
+
+#### Libraries and load in our data
 ```{r}
 library(stringr)
 library(MASS)
@@ -22,12 +24,14 @@ library(ggplot2)
 library(readr)
 library(dplyr)
 library(tidycensus)
+library(tidyverse)
+library(ICC)
 
 asthma_precip_pm25 <- read_csv("datasets/asthma_precip_pm25_clean.csv")
 
 ```
 
-Prepare the variables
+#### Prepare the variables
 ```{r}
 asthma_precip_pm25 <- asthma_precip_pm25 |>
   mutate(
@@ -91,92 +95,173 @@ asthma_precip_pm25 <- asthma_precip_pm25 |>
   left_join(borough_pop, by = c("borough", "year"))
 ```
 
+Temperature is likely a confounder in this relationship, and should be added to the model. I am assuming that the temperature across boroughs is fairly similar, and therefore only using data from one weather station in Central Park for average temperature will suffice.
 
-Visualize relationship again
 ```{r}
-ggplot(asthma_precip_pm25, 
-       aes(x = ppt, y = asthma_er_count)) +
-  geom_point(alpha = 0.3) +
-  geom_smooth(method = "loess") +
-  facet_wrap(~ borough) +
-  theme_minimal() +
-  labs(title = "Precipitation vs Asthma ED Visits by Borough")
-```
-
-Simple baseline model(s)
-```{r}
-# continuous log-transformed ppt model
-model.log <- glm.nb(
-  asthma_er_count ~ log_ppt + borough + season + day_of_week + year + pm25 + offset(log(population)) ,
-  data = asthma_precip_pm25
-)
-
-# categorical ppt model
-model.cat <- glm.nb(
-  asthma_er_count ~ ppt_cat + borough + season + day_of_week + year + pm25 + offset(log(population)), 
-  data = asthma_precip_pm25
-)
-
-# compare AIC and summaries
-AIC(model.log, model.cat)
-
-summary(model.log)
-summary(model.cat)
+# will add and merge daily average temperature data to csv file
 
 ```
 
-The two models have very similar AIC's (53191 for the log transformed model vs 53193 for the categorical threshold model).
+#### Scale variables
 
-***Log Model***  
+I scaled `log_ppt`, `pm25`, and `temperature` because this helps mixed models converge and makes coefficients across covariates comparable.
+```{r}
+# scale variables 
+asthma_precip_pm25 <- asthma_precip_pm25 |>
+  mutate(
+    log_ppt_scaled = as.numeric(scale(log_ppt)),
+    pm25_scaled    = as.numeric(scale(pm25)),
+    # add temperature to scale
+    )
+```
 
-Interestingly, the `log_ppt` coefficient has a slight negative p-value of -.007, with a significant p-value, meaning that more rain is weakly associated with fewer ED visits. Precipitation alone is a weak predictor of asthma ED visits compared to borough, season, and day of week. Each doubling of precipitation is associated with a 0.5% decrease in the asthma ED visit rate.
+## 2. Negative Binomial Model over Poisson
+```{r}
+# poisson
+pois.model <- glm(
+  asthma_er_count ~ log_ppt_scaled + pm25_scaled + borough + season +
+    day_of_week + year + offset(log(population)),
+  family = poisson(link = "log"),
+  data = asthma_precip_pm25
+)
 
-***Category Threshold Model***
+dispersiontest(pois.model)
+```
 
-Only light and moderate rain are significant and are also negative, whereas heavy rain was not significant. 
+According to the overdispersion test, there is evidence of significant overdispersion (dispersion = 2.19, p<.001), which justifies the use of a negative binomial model.
 
-***Across Models***
-Borough effects are huge and highly significant across the models, with Queens having the lowest rate and reference category, the Bronx, having the highest. I'd like to formally test the interaction borough has on the relationship between asthma and precipitation. 
-
-
-Could there be a lag effect of precipitation? Could it be that mold or humidity spikes a couple days after rain? Or perhaps there is no significant association. It could be the case that on heavy rain days people stay home and avoid the ED, even if they do have symptoms.
-
-Interaction model with `borough`
+##3. ICC
 
 ```{r}
+# how much do daily visits cluster within borough?
+asthma_precip_pm25 <- asthma_precip_pm25 |> 
+  mutate(asthma_rate = (asthma_er_count / population) * 100000)
+
+asthma.ICC <- ICCest(borough, asthma_rate, data = asthma_precip_pm25)
+asthma.ICC$ICC
+asthma.ICC$LowerCI
+asthma.ICC$UpperCI
+
+# how much does rain cluster within borough?
+ppt.ICC <- ICCest(borough, log_ppt_scaled, data = asthma_precip_pm25)
+ppt.ICC$ICC
+```
+
+
+Asthma Rate ICC = 0.68. 68% of the total variation in daily asthma ED visit rates is attributable to between-borough differences, whereas only 32% is day-to-day within-borough variation. This justifies including borough fixed intercepts.
+
+Precipitation ICC = -0.001. This means that precipitation is not confounded by borough and the variation in rain is only temporal.
+
+##4. Between borough model (ecological)
+
+```{r}
+dta_btwn <- asthma_precip_pm25 |> 
+  group_by(borough) |> 
+  summarize(
+    mean_asthma_rate = mean(asthma_rate, na.rm = TRUE),
+    mean_log_ppt     = mean(log_ppt_scaled, na.rm = TRUE),
+    mean_pm25        = mean(pm25_scaled, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+mod.btwn <- lm(
+  mean_asthma_rate ~ mean_log_ppt + mean_pm25,
+  data = dta_btwn
+)
+
+summary(mod.btwn)
+```
+
+With 2 degrees of freedom, the model has very low statistical power, which justifies the use of a fixed intercept model.
+
+##5. Main Model: Borough Fixed Intercepts (no interactions)
+
+```{r}
+mod.fixed <- glm.nb(
+  asthma_er_count ~ log_ppt_scaled + pm25_scaled + borough + 
+    season + day_of_week + year + offset(log(population)),
+  data = asthma_precip_pm25
+)
+
+# model outputs
+summary(mod.fixed)
+
+beta_ppt <- summary(mod.fixed)$coefficients["log_ppt_scaled", "Estimate"]
+se_ppt   <- summary(mod.fixed)$coefficients["log_ppt_scaled", "Std. Error"]
+lci_ppt  <- beta_ppt - 1.96 * se_ppt
+uci_ppt  <- beta_ppt + 1.96 * se_ppt
+
+rr_ppt <- paste0(
+  round(exp(beta_ppt), 3), " (95% CI: ",
+  round(exp(lci_ppt), 3), ", ",
+  round(exp(uci_ppt), 3), ")"
+)
+rr_ppt
+```
+
+**`log_ppt_scaled`** A 1 standard deviation increase in log precipitation is associated with a 0.8% decrease in asthma ED visit rates. This is statistically significant but indicates a very small effect on asthma ED visit rates.
+
+**`pm25_scaled`** The p-value was not significant.
+
+**Borough fixed-intercepts** All boroughs had an association with asthma ED visits that was were highly significant. Bronx had the highest asthma ED visit rate, and all other boroughs were significantly lower.
+
+**Season** All seasons had an association with asthma ED visits that was were highly significant. The summer season was highly protective and the spring season showed a slightly elevated association with asthma ED visits, possibly due to an overlap with allergy season.
+
+##6. Effect Modification - Borough Interaction 
+
+```{r}
+
 # reduced model (as noted earlier)
-model.log <- glm.nb(
-  asthma_er_count ~ log_ppt + borough + season + day_of_week + year +  offset(log(population)),
+mod.fixed <- glm.nb(
+  asthma_er_count ~ log_ppt_scaled + pm25_scaled + borough + 
+    season + day_of_week + year + offset(log(population)),
   data = asthma_precip_pm25
 )
 
 # full model with interaction
-model.full <- glm.nb(
-  asthma_er_count ~ log_ppt * borough + season + day_of_week + year + offset(log(population)), 
+mod.full <- glm.nb(
+  asthma_er_count ~ log_ppt_scaled * borough + pm25_scaled + 
+    season + day_of_week + year + offset(log(population)),
   data = asthma_precip_pm25
 )
 
 # likelihood ratio test
-lrtest(model.log, model.full)
+lrtest(mod.fixed, mod.full)
 
 # anova test
 Anova(model.full, type = "III")
 ```
 
-The LRT p-value is 0.62, which means that the interaction term does not significantly improve the model fit and suggests precipitation affects asthma ED visits similarly across all five boroughs. The reduced model with no interaction is preferred.
+The LRT p-value is 0.6492, which means that the interaction term does not significantly improve the model fit. Although we proved that boroughs have different baseline asthma rates, precipitation affects them similarly and the association does not differ significantly across boroughs.
 
-Exploring a season interaction model
+## 7. Categorical Precipitation Sensitivity Analysis
 
 ```{r}
-# is ppt effect modified by season? 
-model.season.int <- glm.nb(
-  asthma_er_count ~ log_ppt * season + borough + day_of_week + year +
-    offset(log(population)),
+
+mod.full <- glm.nb(
+  asthma_er_count ~ log_ppt_scaled + borough + pm25_scaled + 
+    season + day_of_week + year + offset(log(population)),
   data = asthma_precip_pm25
 )
 
-lrtest(model.log, model.season.int)
+# categorical ppt model
+model.cat <- glm.nb(
+  asthma_er_count ~ ppt_cat + borough + pm25_scaled + season + 
+    day_of_week + year + offset(log(population)), 
+  data = asthma_precip_pm25
+)
+
+# AIC
+summary(model.cat)
 ```
+
+***Category Threshold Model***
+
+Only light and moderate rain are significant, whereas heavy rain was not significant.
+
+Could there be a lag effect of precipitation? Could it be that mold or humidity spikes a couple days after rain? Or perhaps there is no significant association. It could be the case that on heavy rain days people stay home and avoid the ED, even if they do have symptoms.
+
+## 8. Storm Events Analysis
 
 I want to add storm event type data from the NOAA Storm Events database.
 
@@ -226,38 +311,28 @@ storm_events <- noaa_storms |>
 
 # merge with asthma_precip_pm25
 asthma_model_df <- asthma_precip_pm25 |> 
-  left_join(storm_events, by = c("borough", "date")) |> 
-  # replace NA storm_event with "None"
-  mutate(storm_event = ifelse(is.na(storm_event), "None", storm_event))
+  left_join(storm_events |> select(borough, date, storm_event), by = c("borough", "date")) |> 
+   mutate(
+    storm_event = if_else(is.na(storm_event), 0, 1)
+   )
 
-# create lag for storm events (add more lags here later)
+# create lags for storm events
 
 asthma_model_df <- asthma_model_df |> 
-  mutate(
-    # create a binary storm event for that day
-    storm_event = if_else(storm_event != "None", 1, 0)
-  ) |> 
+  arrange(borough, date) |> 
   group_by(borough) |> 
-  arrange(date) |>    
   mutate(
-    post_storm1 = lag(storm_event, 1)  # 1-day lag
-  ) |> 
-  ungroup() |> 
-  # replace NA lag with 0
-  mutate(post_storm1 = ifelse(is.na(post_storm1), 0, post_storm1))
-
-# create storm indicators and lags then convert to factors
-
-asthma_model_df <- asthma_model_df |> 
-  # create storm indicators and lags
-  mutate(
-    storm_event = if_else(date %in% storm_event, 1, 0),
     post_storm1 = lag(storm_event, 1, default = 0),
     post_storm2 = lag(storm_event, 2, default = 0),
     post_storm3 = lag(storm_event, 3, default = 0),
-    # cumulative storm effect over 3 days
-    storm_cum3 = storm_event + post_storm1 + post_storm2
+    storm_cum3  = storm_event + post_storm1 + post_storm2
   ) |> 
+  ungroup()
+  )
+  
+
+# convert to factors
+asthma_model_df <- asthma_model_df |> 
   mutate(
     storm_event = factor(storm_event, levels = c(0,1), labels = c("None","Storm")),
     post_storm1 = factor(post_storm1, levels = c(0,1), labels = c("None","PostStorm1")),
@@ -265,11 +340,16 @@ asthma_model_df <- asthma_model_df |>
     post_storm3 = factor(post_storm3, levels = c(0,1), labels = c("None","PostStorm3"))
   )
 
+
 # run model with storm lag
 model.storm.lag <- glm.nb(
-  asthma_er_count ~ log_ppt + storm_event + post_storm1 + post_storm2 + borough + season + day_of_week + year + offset(log(population)),
+  asthma_er_count ~ log_ppt_scaled + pm25_scaled +
+    storm_event + post_storm1 + post_storm2 +
+    borough + season + day_of_week + year +
+    offset(log(population)),
   data = asthma_model_df
 )
 
+summary(model.storm.lag)
 ```
 
