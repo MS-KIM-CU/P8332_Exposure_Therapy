@@ -1,4 +1,4 @@
-# Install required package if not already installed
+# Packages
 library(dagitty)
 library(ggdag)
 library(ggplot2)
@@ -11,6 +11,9 @@ dag {
   boroughs -> average_precip
   boroughs -> asthma_er_visits
   
+  seasons -> average_precip
+  seasons -> asthma_er_visits
+  
   PM25 -> asthma_er_visits
   
   pollen_count -> asthma_er_visits
@@ -19,9 +22,9 @@ dag {
 
 # Optional: coordinates for nicer plotting
 coordinates(dag) <- list(
-  x = c(average_precip=0, asthma_er_visits=2, boroughs=-1, PM25=0, pollen_count=1),
-  y = c(average_precip=1, asthma_er_visits=1, boroughs=2, PM25=2, pollen_count=2)
+  x = c(average_precip=0, asthma_er_visits=3, boroughs=-1, seasons=-1, PM25=1, pollen_count=2),
+  y = c(average_precip=2, asthma_er_visits=2, boroughs=3, seasons=1, PM25=3, pollen_count=1)
 )
 
 # Plot DAG
-plot(dag, main="DAG: Precipitation, Asthma, Borough as Confounder, PM2.5 Effect Modifier, Pollen Mixture")
+plot(dag, main="DAG: Precipitation, Asthma, Confounders, Effect Modifier, Pollen Mixture")
