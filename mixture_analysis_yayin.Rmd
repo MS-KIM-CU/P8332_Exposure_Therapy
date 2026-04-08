@@ -1,0 +1,170 @@
+---
+title: "methods"
+author: "yayin"
+date: "2026-03-25"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(readr)
+library(dplyr)
+library(stringr)
+library(lubridate)
+library(tidyr)
+library(factoextra)
+library(lubridate)
+library(GGally)
+library(ggplot2)
+library(stringr)
+```
+
+### Load data: 
+```{r loadingdata, include=FALSE}
+#read data
+asthma_precip_pm25_clean <- read_csv("asthma_precip_pm25_clean.csv")
+pollen_count_latest_update <- read_csv("pollen count.csv")
+```
+
+### Cleaning and joining dataset: 
+```{r data cleaning}
+
+# aggregate the asthma precip pm25 dataset to be citywide
+asthma_daily <- asthma_precip_pm25_clean %>%
+  group_by(date) %>%
+  summarise(
+    avg_ppt = mean(ppt, na.rm = TRUE),
+    avg_pm25 = mean(pm25, na.rm = TRUE),
+    total_asthma_er = sum(asthma_er_count, na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+# conver pollendatasest from wide to long
+df_long <- pollen_count_latest_update %>%
+  t() %>%
+  as.data.frame() %>%
+  
+  # create date column from original column names
+  mutate(date_raw = colnames(pollen_count_latest_update)) %>%
+  
+  # rename the only data column
+  rename(value = V1) %>%
+  
+  # extract dates/clean things up
+  mutate(
+    date = stringr::str_extract(date_raw, "\\d{1,2}/\\d{1,2}/\\d{2}"),
+    date = as.Date(date, "%m/%d/%y"),
+    value = na_if(value, "–"),
+    count = as.numeric(stringr::str_extract(value, "\\d+"))
+  ) %>%
+  select(date, count)
+
+# Joining the dataset
+asthma_daily <- asthma_daily %>%
+  mutate(date = as.Date(date))
+
+df_long <- df_long %>%
+  mutate(date = as.Date(date))
+
+final_dataset <- asthma_daily %>%
+  left_join(df_long, by = "date")
+
+final_dataset <- final_dataset %>%
+  rename("pollen" = "count")
+
+#export joint pollen dataset
+write_csv(final_dataset, "final_dataset.csv")
+```
+
+
+## Remove missing rows
+
+```{r}
+final_dataset <- final_dataset %>%
+  filter(complete.cases(.))
+```
+
+## Create constituent matrix
+
+```{r}
+Constituents0 <- final_dataset %>%
+  select(-date, -total_asthma_er)
+
+dim(Constituents0)
+summary(Constituents0)
+```
+
+## Correlation structure
+
+```{r}
+ggcorr(Constituents0)
+```
+
+# Principal Components Analysis
+
+```{r}
+pca.constituent <- prcomp(Constituents0, scale. = TRUE)
+
+summary(pca.constituent)
+```
+
+## Eigenvalues
+
+```{r}
+eigenvalues.v <- pca.constituent$sdev^2
+
+perc_variance.v <- eigenvalues.v/sum(eigenvalues.v)
+perc_variance.v <- round(100*perc_variance.v,1)
+
+cumulative_perc_var.v <- cumsum(perc_variance.v)
+
+eigenvalues.constituent <- data.frame(
+  PC = seq_along(eigenvalues.v),
+  Eigenvalue = eigenvalues.v,
+  Variance = perc_variance.v,
+  Cumulative = cumulative_perc_var.v
+)
+
+eigenvalues.constituent
+```
+
+## Scree plot
+
+```{r}
+fviz_eig(pca.constituent)
+```
+
+## PCA Loadings
+
+```{r}
+loadings.constituent <- as.data.frame.matrix(pca.constituent$rotation)
+loadings.constituent$Constituent <- rownames(loadings.constituent)
+
+loadings.long <- loadings.constituent %>%
+  pivot_longer(-Constituent, names_to="PC", values_to="Loading")
+
+loadings.long %>%
+  filter(PC %in% c("PC1","PC2", "PC3")) %>%
+  ggplot(aes(Constituent, Loading)) +
+  geom_col() +
+  facet_wrap(~PC) +
+  theme_bw()
+```
+
+## PCA Scores
+
+```{r}
+scores.constituent <- as.data.frame(pca.constituent$x)
+
+scores.constituent <- scores.constituent %>%
+  select(PC1:PC3)
+
+scores.constituent$Date <- final_dataset$date
+
+head(scores.constituent)
+```
+
+
+
+
+
