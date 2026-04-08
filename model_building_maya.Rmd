@@ -317,7 +317,6 @@ asthma_model_df <- asthma_precip_pm25 |>
    )
 
 # create lags for storm events
-
 asthma_model_df <- asthma_model_df |> 
   arrange(borough, date) |> 
   group_by(borough) |> 
@@ -328,8 +327,6 @@ asthma_model_df <- asthma_model_df |>
     storm_cum3  = storm_event + post_storm1 + post_storm2
   ) |> 
   ungroup()
-  )
-  
 
 # convert to factors
 asthma_model_df <- asthma_model_df |> 
@@ -339,7 +336,6 @@ asthma_model_df <- asthma_model_df |>
     post_storm2 = factor(post_storm2, levels = c(0,1), labels = c("None","PostStorm2")),
     post_storm3 = factor(post_storm3, levels = c(0,1), labels = c("None","PostStorm3"))
   )
-
 
 # run model with storm lag
 model.storm.lag <- glm.nb(
@@ -351,5 +347,20 @@ model.storm.lag <- glm.nb(
 )
 
 summary(model.storm.lag)
+```
+
+On storm days, asthma ER visits are significantly lower. There is a 6.6% decrease in asthma ER visits on storm days. The lagged effects a day after the storm (`post_storm1`) are not significant (p = 0.525), and we see the same story two days after a storm (`post_storm2`, p = 0.589).
+
+#### Quantifying cumulative exposure over 3 days post-storm.
+
+```{r}
+mod.storm.cumulative <- glm.nb(
+  asthma_er_count ~ log_ppt_scaled + pm25_scaled + storm_cum3 +
+    borough + season + day_of_week + year +
+    offset(log(population)),
+  data = asthma_model_df
+)
+
+summary(mod.storm.cumulative)
 ```
 
