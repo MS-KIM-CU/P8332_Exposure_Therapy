@@ -1,5 +1,4 @@
 ---
-title: "methods"
 author: "yayin"
 date: "2026-03-25"
 output: html_document
@@ -76,19 +75,50 @@ final_dataset <- final_dataset %>%
 write_csv(final_dataset, "final_dataset.csv")
 ```
 
+## PM 2.5, pollen, ppt distribution
+```{r}
+
+# Plot distributions
+data_long2 <- final_dataset %>%
+  select(avg_pm25, pollen, avg_ppt) %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = "variable",
+    values_to = "value"
+  )
+
+# Plot histograms
+ggplot(data_long2, aes(x = value, fill = variable)) +
+  geom_histogram(alpha = 0.6, position = "identity", bins = 30) +
+  facet_wrap(~variable, scales = "free") +
+  labs(title = "Distributions of PM2.5, Pollen, and Precipitation",
+       x = "Value",
+       y = "Count") +
+  theme_minimal()
+
+# Take natural log of each variable, adding a small constant to avoid log(0)
+pca <- final_dataset %>%
+  mutate(
+    ln_pm25 = log(avg_pm25 + 0.1),
+    ln_pollen = log(pollen + 0.1),
+    ln_ppt = log(avg_ppt + 0.1)
+  )
+
+
+```
 
 ## Remove missing rows
 
 ```{r}
-final_dataset <- final_dataset %>%
+pca <- pca %>%
   filter(complete.cases(.))
 ```
 
 ## Create constituent matrix
 
 ```{r}
-Constituents0 <- final_dataset %>%
-  select(-date, -total_asthma_er)
+Constituents0 <- pca %>%
+  select(-date, -total_asthma_er, -avg_ppt, -avg_pm25, -pollen)
 
 dim(Constituents0)
 summary(Constituents0)
@@ -159,10 +189,48 @@ scores.constituent <- as.data.frame(pca.constituent$x)
 scores.constituent <- scores.constituent %>%
   select(PC1:PC3)
 
-scores.constituent$Date <- final_dataset$date
+scores.constituent$date <- pca$date
 
 head(scores.constituent)
 ```
+
+## Regression
+
+```{r}
+
+### Join pca data with constituent scores
+# Check for duplicates
+pca %>% count(date) %>% filter(n > 1)
+scores.constituent %>% count(date) %>% filter(n > 1)
+
+scores.constituent <- scores.constituent %>%
+  group_by(date) %>%
+  summarise(across(everything(), mean, na.rm = TRUE))
+
+pca <- pca %>%
+  left_join(scores.constituent, by = "date")
+
+#create the season confounder variable 
+pca <-pca %>%
+  mutate(
+    month = month(date),
+    season = case_when(
+      month %in% c(12, 1, 2)  ~ "Winter",
+      month %in% c(3, 4, 5)   ~ "Spring",
+      month %in% c(6, 7, 8)   ~ "Summer",
+      month %in% c(9, 10, 11) ~ "Fall"
+    ),
+    season = factor(season, levels = c("Winter", "Spring", "Summer", "Fall"))
+  ) %>%
+  select(-month)
+
+#regression 
+model <- lm(total_asthma_er ~ PC1 + PC2 + PC3 + season, data = pca)
+
+summary(model)
+
+```
+
 
 
 
