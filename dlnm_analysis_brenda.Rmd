@@ -1,0 +1,641 @@
+---
+title: "Distributed Lag Non-Linear Model (DLNM) Analysis"
+subtitle: "Daily Precipitation and Asthma ED Visits in NYC (2016–2019)"
+author: "Minseo (Brenda) Kim"
+output: html_document
+---
+
+```{r, include=FALSE}
+knitr::opts_chunk$set(
+  echo    = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width  = 10,
+  fig.height = 6
+)
+```
+
+Load libraries
+
+```{r}
+library(dlnm)
+library(splines)
+library(lubridate)
+library(ggplot2)
+library(dplyr)
+library(readr)
+library(tidyr)
+```
+
+# Data Preparation
+
+## Load Data
+
+Borough-level asthma ED visits, precipitation, and PM2.5 data (2016–2019).
+
+```{r}
+borough_data <- read_csv("datasets/asthma_precip_pm25_clean.csv")
+
+glimpse(borough_data)
+summary(borough_data)
+```
+
+## Aggregate to City-Wide
+
+DLNM is fit at the city-wide level. Summing asthma counts and averaging exposure across boroughs per day.
+
+```{r}
+citywide <- borough_data %>%
+  mutate(date = as.Date(date)) %>%
+  group_by(date) %>%
+  summarise(
+    asthma_total = sum(asthma_er_count, na.rm = TRUE),
+    ppt_mean     = mean(ppt, na.rm = TRUE),
+    pm25_mean    = mean(pm25, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(date)
+
+# Date range and completeness check
+cat("Date range:", as.character(min(citywide$date)), "to", as.character(max(citywide$date)), "\n")
+cat("Total days:", nrow(citywide), "\n")
+cat("Expected days:", as.numeric(max(citywide$date) - min(citywide$date)) + 1, "\n")
+
+full_dates <- seq.Date(min(citywide$date), max(citywide$date), by = "day")
+missing_dates <- full_dates[!full_dates %in% citywide$date]
+cat("Missing dates:", length(missing_dates), "\n")
+```
+
+## Create Time Variables
+
+Day of week, season, and numeric time index for the long-term trend spline.
+
+```{r}
+citywide <- citywide %>%
+  mutate(
+    year        = year(date),
+    month       = month(date),
+    dow         = factor(wday(date, label = TRUE)),
+    season      = factor(case_when(
+      month %in% c(12, 1, 2)  ~ "Winter",
+      month %in% c(3, 4, 5)   ~ "Spring",
+      month %in% c(6, 7, 8)   ~ "Summer",
+      month %in% c(9, 10, 11) ~ "Fall"
+    ), levels = c("Winter", "Spring", "Summer", "Fall")),
+    time        = as.numeric(date - min(date))
+  )
+```
+
+## Temperature Data
+
+```{r}
+# TODO: merge PRISM daily mean temperature
+# temp_data <- read_csv("datasets/temperature_data.csv")
+```
+
+# Exploratory Data Analysis
+
+## Summary Statistics
+
+```{r}
+citywide %>%
+  summarise(
+    across(
+      c(asthma_total, ppt_mean, pm25_mean),
+      list(
+        mean   = ~mean(., na.rm = TRUE),
+        sd     = ~sd(., na.rm = TRUE),
+        median = ~median(., na.rm = TRUE),
+        min    = ~min(., na.rm = TRUE),
+        max    = ~max(., na.rm = TRUE)
+      ),
+      .names = "{.col}_{.fn}"
+    )
+  ) %>%
+  pivot_longer(everything(), names_to = "stat", values_to = "value") %>%
+  print(n = Inf)
+```
+
+## Precipitation Distribution
+
+Key percentiles and histogram with 95th percentile marked.
+
+```{r}
+precip_quantiles <- quantile(citywide$ppt_mean,
+                              probs = c(0.25, 0.50, 0.75, 0.90, 0.95, 0.99),
+                              na.rm = TRUE)
+cat("Precipitation percentiles (mm):\n")
+print(round(precip_quantiles, 2))
+
+cat("\nZero-precipitation days:",
+    round(mean(citywide$ppt_mean == 0, na.rm = TRUE) * 100, 1), "%\n")
+
+ggplot(citywide, aes(x = ppt_mean)) +
+  geom_histogram(bins = 50, fill = "steelblue", color = "white", alpha = 0.8) +
+  geom_vline(xintercept = precip_quantiles["95%"], linetype = "dashed", color = "red") +
+  annotate("text", x = precip_quantiles["95%"], y = Inf, label = "95th percentile",
+           vjust = 2, hjust = -0.1, color = "red", size = 3.5) +
+  labs(title = "City-Wide Daily Mean Precipitation",
+       x = "Precipitation (mm)", y = "Frequency") +
+  theme_minimal()
+```
+
+The precipitation distribution is extremely right-skewed with a large spike at 0 mm (median 0; \~45.7% of days), a modest amount of light precipitation (75th percentile 2.69 mm), and a sparse extreme tail; the dashed red line marks the 95th percentile (20.56 mm), highlighting that estimates for very heavy rain (\>20-80mm) are based on sparse data in the tail.
+
+## Cross-Correlation
+
+CCF between precipitation and asthma ED visits (up to 21-day lag).
+
+```{r}
+ccf_result <- ccf(citywide$ppt_mean, citywide$asthma_total,
+                   lag.max = 21, plot = FALSE)
+
+ccf_df <- data.frame(lag = ccf_result$lag, acf = ccf_result$acf)
+
+ggplot(ccf_df, aes(x = lag, y = acf)) +
+  geom_hline(yintercept = 0, color = "gray50") +
+  geom_hline(yintercept = c(-1, 1) * qnorm(0.975) / sqrt(nrow(citywide)),
+             linetype = "dashed", color = "blue") +
+  geom_segment(aes(xend = lag, yend = 0), color = "steelblue") +
+  geom_point(color = "steelblue", size = 2) +
+  labs(title = "CCF: Precipitation vs. Asthma ED Visits",
+       subtitle = "Positive lag = precipitation leads",
+       x = "Lag (days)", y = "Cross-Correlation") +
+  theme_minimal()
+```
+
+Cross-correlations are near zero at most lags (within the plotted significance bounds), implying weak linear lead–lag association in raw series. There is one visibly stronger negative correlation appears around a short positive lag (precipitation leading by \~1 day), but its magnitude remains small in absolute terms. =\> No strong linear lead-lag relationship between daily rain and asthma ED visits in the raw data.
+
+## Autocorrelation of Asthma ED Visits
+
+```{r}
+acf(citywide$asthma_total, lag.max = 21,
+    main = "ACF: Daily Asthma ED Visits (City-Wide)")
+```
+
+Autocorrelation is strongly positive across many lags with a slow decay and apparent weekly structure (elevations around \~7, \~14, \~21 days). It confirms substantial temporal dependence (day-of-week and longer-term patterns), which the DLNM model correctly controls for using the time spline, DOW, and season terms.
+
+# DLNM Model
+
+## Cross-Basis
+
+Natural cubic splines for exposure (3 df) and lag (4 df), max lag = 14 days.
+
+```{r}
+cb_precip <- crossbasis(
+  citywide$ppt_mean,
+  lag    = 14,
+  argvar = list(fun = "ns", df = 3),
+  arglag = list(fun = "ns", df = 4)
+)
+
+summary(cb_precip)
+```
+
+## Primary Model
+
+Quasi-Poisson GLM: `log(E[Y]) = α + cb(precip, lag 0–14) + ns(time, 7df/yr) + DOW + season`. Temperature spline to be added.
+
+```{r}
+n_years <- as.numeric(max(citywide$date) - min(citywide$date)) / 365.25
+time_df <- round(7 * n_years)
+
+model_primary <- glm(
+  asthma_total ~ cb_precip +
+    ns(time, df = time_df) +
+    # ns(temp_mean, df = 6) +    # TODO: add temperature
+    dow +
+    season,
+  family = quasipoisson(link = "log"),
+  data   = citywide
+)
+
+summary(model_primary)
+cat("\nDispersion parameter:", summary(model_primary)$dispersion, "\n")
+```
+
+## DLNM Predictions
+
+Centering at 0 mm (no rain) as the reference.
+
+```{r}
+pred_primary <- crosspred(
+  cb_precip,
+  model_primary,
+  at  = seq(0, max(citywide$ppt_mean, na.rm = TRUE), length.out = 100),
+  cen = 0
+)
+```
+
+# Visualizations
+
+## 3D Exposure-Lag-Response Surface
+
+```{r, fig.height=8}
+plot(pred_primary,
+     xlab = "Precipitation (mm)", ylab = "Lag (days)", zlab = "RR",
+     main = "3D Exposure-Lag-Response:\nPrecipitation and Asthma ED Visits",
+     theta = 220, phi = 30, ltheta = -120,
+     shade = 0.3, col = "steelblue")
+```
+
+The 3D surface shows the full non-linear, lag-dependent relationship between precipitation and asthma ED visit risk (RR) over 0–14 days. Risk stays close to 1.0 across most of the surface. Slight elevations (RR \> 1) appear at higher precipitation levels and short lags (especially lag 1–5 days), while some areas of RR \< 1 are visible at moderate rain and longer lags. The surface is noisy and uncertain at very high precipitation (\>40 mm) because of limited data.
+
+## Contour Plot
+
+```{r}
+plot(pred_primary, "contour",
+     xlab = "Precipitation (mm)", ylab = "Lag (days)",
+     main = "Contour: Precipitation-Lag-Response",
+     key.title = title("RR"))
+```
+
+The contour plot reinforces the non-linear, lag-varying pattern. Regions of RR \> 1 (higher risk) are concentrated at higher precipitation (\>30–40 mm) and short lags (0–5 days). Regions of RR \< 1 (lower risk) appear at moderate rain levels and longer lags. The effect weakens and sometimes reverses after \~7 days, indicating a complex, short-lived response rather than a simple delayed increase.
+
+## Lag-Specific Exposure-Response
+
+Exposure-response at lag 0, 2, 5, 7, 14 days.
+
+```{r}
+lag_days <- c(0, 2, 5, 7, 14)
+
+par(mfrow = c(2, 3), mar = c(4, 4, 3, 1))
+for (lag_val in lag_days) {
+  plot(pred_primary, "slices",
+       var = NULL, lag = lag_val,
+       xlab = "Precipitation (mm)", ylab = "RR",
+       main = paste0("Lag ", lag_val, " days"),
+       col = "steelblue", ci.arg = list(col = adjustcolor("steelblue", 0.2)))
+}
+par(mfrow = c(1, 1))
+```
+
+The relationship between daily precipitaiton (0-80+mm) and asthma ED visit risk (RR) changes depending on the time lag after the rain. All curves are non-linear, with a general pattern of slight protective effects at low-to-moderate rainfall and increasing risk at heavier rainfall. The strength and timing of the harmful effect vary clearly by lag. Overall, the heavy rainfall (\>40–50 mm) is linked to a modest short-term increase in asthma ED visits that peaks around 2 days later, then gradually weakens and mostly disappears by 7–14 days. Light rain sometimes shows a small protective association, especially at shorter and longer lags. The confidence intervals widen at higher precipitation due to fewer heavy rain days in the data.
+
+## Precipitation-Specific Lag-Response
+
+Lag-response at 50th, 90th, 95th, 99th percentile precipitation values.
+
+```{r}
+# Snap quantiles to nearest value in prediction grid
+precip_quantile_vals <- quantile(citywide$ppt_mean,
+                                  probs = c(0.50, 0.90, 0.95, 0.99),
+                                  na.rm = TRUE)
+pred_grid <- pred_primary$predvar
+precip_vals <- sapply(precip_quantile_vals, function(v) {
+  pred_grid[which.min(abs(pred_grid - v))]
+})
+names(precip_vals) <- names(precip_quantile_vals)
+
+# Reconstruct lag sequence from crosspred object
+lag_seq <- seq(pred_primary$lag[1], pred_primary$lag[2], by = pred_primary$bylag)
+
+# Extract and plot each slice manually
+par(mfrow = c(2, 2), mar = c(4, 4, 3, 1))
+for (i in seq_along(precip_vals)) {
+  idx <- which.min(abs(pred_primary$predvar - precip_vals[i]))
+  rr  <- pred_primary$matRRfit[idx, ]
+  lo  <- pred_primary$matRRlow[idx, ]
+  hi  <- pred_primary$matRRhigh[idx, ]
+
+  plot(lag_seq, rr,
+       type = "l", col = "darkred", lwd = 2,
+       xlab = "Lag (days)", ylab = "RR",
+       main = paste0("Precip = ", round(precip_vals[i], 1), " mm (",
+                      names(precip_vals)[i], ")"),
+       ylim = range(c(lo, hi, 1), na.rm = TRUE))
+  polygon(c(lag_seq, rev(lag_seq)), c(hi, rev(lo)),
+          col = adjustcolor("darkred", 0.2), border = NA)
+  lines(lag_seq, rr, col = "darkred", lwd = 2)
+  abline(h = 1, lty = 2, col = "gray50")
+}
+par(mfrow = c(1, 1))
+```
+
+How the lag-response pattern (RR over 0–14 days) changes depending on the intensity of precipitation. The reference is 0 mm (no rain). The effect is clearly non-linear and driven mainly by heavier rain events. Overall, typical/moderate rainfall (up to 90th percentile) has essentially no effect on asthma ED visits. Only heavy to very heavy rain (≥95th percentile) produces a detectable short-term rise in risk that peaks around 2 days later and largely disappears within a week. The net cumulative effect over 14 days stays neutral or slightly protective.
+
+## Cumulative Exposure-Response
+
+Total effect of precipitation summed over lag 0–14 days.
+
+```{r}
+plot(pred_primary, "overall",
+     xlab = "Precipitation (mm)",
+     ylab = "Cumulative RR (lag 0–14)",
+     main = "Cumulative: Precipitation and Asthma ED Visits",
+     col = "steelblue",
+     ci.arg = list(col = adjustcolor("steelblue", 0.2)),
+     lwd = 2)
+abline(h = 1, lty = 2, col = "gray50")
+```
+
+Cumulated over the full 14-day lag window, higher precipitation is associated with a modest protective (or null) overall effect. The curve is slightly decreasing up to \~20 mm then flattens, indicating that while short lags show small risk increases, the net 14-day effect is neutral to slightly protective.
+
+# Sensitivity Analyses
+
+## Varying Max Lag (7, 14, 21 days)
+
+```{r}
+lag_windows <- c(7, 14, 21)
+models_lag <- list()
+preds_lag  <- list()
+
+for (max_lag in lag_windows) {
+  cb_temp <- crossbasis(
+    citywide$ppt_mean,
+    lag    = max_lag,
+    argvar = list(fun = "ns", df = 3),
+    arglag = list(fun = "ns", df = 4)
+  )
+
+  mod_temp <- glm(
+    asthma_total ~ cb_temp +
+      ns(time, df = time_df) +
+      dow + season,
+    family = quasipoisson(link = "log"),
+    data   = citywide
+  )
+
+  pred_temp <- crosspred(
+    cb_temp, mod_temp,
+    at  = seq(0, max(citywide$ppt_mean, na.rm = TRUE), length.out = 100),
+    cen = 0
+  )
+
+  models_lag[[as.character(max_lag)]] <- mod_temp
+  preds_lag[[as.character(max_lag)]]  <- pred_temp
+}
+
+par(mfrow = c(1, 3), mar = c(4, 4, 3, 1))
+for (max_lag in lag_windows) {
+  plot(preds_lag[[as.character(max_lag)]], "overall",
+       xlab = "Precipitation (mm)",
+       ylab = paste0("Cumulative RR (lag 0–", max_lag, ")"),
+       main = paste0("Max lag = ", max_lag, " days"),
+       col = "steelblue",
+       ci.arg = list(col = adjustcolor("steelblue", 0.2)),
+       lwd = 2)
+  abline(h = 1, lty = 2, col = "gray50")
+}
+par(mfrow = c(1, 1))
+```
+
+Comparing the overall (cumulative) effect of precipitation on asthma ED visits when the DLNM model uses different maximum lag periods, the curves show the total risk summed over the entire lag window, with 0 mm as the reference. Overall, The results are highly robust to the choice of maximum lag. The main association occurs within the first 7–14 days, and longer windows do not alter the conclusion that heavy precipitation has only a modest, mostly neutral-to-protective net cumulative effect over the full period.
+
+## Varying Time Spline df (5, 7, 10 df/yr)
+
+```{r}
+df_per_year <- c(5, 7, 10)
+models_df   <- list()
+preds_df    <- list()
+
+for (df_yr in df_per_year) {
+  this_df <- round(df_yr * n_years)
+
+  mod_temp <- glm(
+    asthma_total ~ cb_precip +
+      ns(time, df = this_df) +
+      dow + season,
+    family = quasipoisson(link = "log"),
+    data   = citywide
+  )
+
+  pred_temp <- crosspred(
+    cb_precip, mod_temp,
+    at  = seq(0, max(citywide$ppt_mean, na.rm = TRUE), length.out = 100),
+    cen = 0
+  )
+
+  models_df[[as.character(df_yr)]] <- mod_temp
+  preds_df[[as.character(df_yr)]]  <- pred_temp
+}
+
+par(mfrow = c(1, 3), mar = c(4, 4, 3, 1))
+for (df_yr in df_per_year) {
+  plot(preds_df[[as.character(df_yr)]], "overall",
+       xlab = "Precipitation (mm)",
+       ylab = "Cumulative RR (lag 0–14)",
+       main = paste0(df_yr, " df/yr"),
+       col = "steelblue",
+       ci.arg = list(col = adjustcolor("steelblue", 0.2)),
+       lwd = 2)
+  abline(h = 1, lty = 2, col = "gray50")
+}
+par(mfrow = c(1, 1))
+```
+
+The overall (cumulative) effect of precipitation on asthma ED visits when the long-term time trend is controlled using different levels of flexibility in the natural cubic spline (df per year). The results are highly robust to the choice of time spline flexibility. Whether using a smoother (5 df/yr) or more flexible (10 df/yr) adjustment for long-term trends and seasonality, the estimated cumulative effect of precipitation on asthma ED visits stays consistent. This confirms that the findings are not driven by residual temporal confounding.
+
+## Threshold Analysis (95th Percentile Binary)
+
+Binary DLNM: above vs. below 95th percentile precipitation.
+
+```{r}
+p90 <- quantile(citywide$ppt_mean, 0.90, na.rm = TRUE)
+p95 <- quantile(citywide$ppt_mean, 0.95, na.rm = TRUE)
+p99 <- quantile(citywide$ppt_mean, 0.99, na.rm = TRUE)
+
+citywide <- citywide %>%
+  mutate(
+    precip_above_90 = as.numeric(ppt_mean >= p90),
+    precip_above_95 = as.numeric(ppt_mean >= p95),
+    precip_above_99 = as.numeric(ppt_mean >= p99)
+  )
+
+cb_binary95 <- crossbasis(
+  citywide$precip_above_95,
+  lag    = 14,
+  argvar = list(fun = "lin"),
+  arglag = list(fun = "ns", df = 4)
+)
+
+model_binary95 <- glm(
+  asthma_total ~ cb_binary95 +
+    ns(time, df = time_df) +
+    dow + season,
+  family = quasipoisson(link = "log"),
+  data   = citywide
+)
+
+pred_binary95 <- crosspred(cb_binary95, model_binary95, at = 1, cen = 0)
+
+plot(pred_binary95, "slices", var = 1,
+     xlab = "Lag (days)", ylab = "RR",
+     main = "Lag-Response: Precip >= 95th Percentile vs. Below",
+     col = "darkred",
+     ci.arg = list(col = adjustcolor("darkred", 0.2)),
+     lwd = 2)
+abline(h = 1, lty = 2, col = "gray50")
+
+cat("\nCumulative RR (precip >= 95th pctl, lag 0-14):\n")
+cat("  RR:", round(pred_binary95$allRRfit["1"], 3), "\n")
+cat("  95% CI:", round(pred_binary95$allRRlow["1"], 3), "-",
+    round(pred_binary95$allRRhigh["1"], 3), "\n")
+```
+
+Binary indicator for days with precipitation ≥ 95th percentile (≥ 20.56 mm). The lag-response shows a small, short-lived increase in risk that peaks around lag 2–3 days and returns to null by lag 7–10. The 14-day cumulative RR is slightly below 1 (protective/neutral overall).
+
+## Season-Stratified Models
+
+Separate DLNM for each season with reduced time spline df.
+
+```{r}
+seasons_to_test <- c("Spring", "Summer", "Fall", "Winter")
+models_season <- list()
+preds_season  <- list()
+
+for (ssn in seasons_to_test) {
+  season_data <- citywide %>% filter(season == ssn)
+  season_data <- season_data %>%
+    mutate(time_sub = as.numeric(date - min(date)))
+
+  cb_ssn <- crossbasis(
+    season_data$ppt_mean,
+    lag    = 14,
+    argvar = list(fun = "ns", df = 3),
+    arglag = list(fun = "ns", df = 4)
+  )
+
+  season_time_df <- max(3, round(2 * n_years))
+
+  mod_ssn <- glm(
+    asthma_total ~ cb_ssn +
+      ns(time_sub, df = season_time_df) +
+      dow,
+    family = quasipoisson(link = "log"),
+    data   = season_data
+  )
+
+  pred_ssn <- crosspred(
+    cb_ssn, mod_ssn,
+    at  = seq(0, quantile(season_data$ppt_mean, 0.99, na.rm = TRUE), length.out = 50),
+    cen = 0
+  )
+
+  models_season[[ssn]] <- mod_ssn
+  preds_season[[ssn]]  <- pred_ssn
+}
+
+par(mfrow = c(2, 2), mar = c(4, 4, 3, 1))
+season_colors <- c("Winter" = "dodgerblue", "Spring" = "forestgreen",
+                    "Summer" = "darkorange", "Fall" = "brown")
+
+for (ssn in seasons_to_test) {
+  plot(preds_season[[ssn]], "overall",
+       xlab = "Precipitation (mm)",
+       ylab = "Cumulative RR (lag 0–14)",
+       main = ssn,
+       col = season_colors[ssn],
+       ci.arg = list(col = adjustcolor(season_colors[ssn], 0.2)),
+       lwd = 2)
+  abline(h = 1, lty = 2, col = "gray50")
+}
+par(mfrow = c(1, 1))
+```
+
+The overall (cumulative over 0–14 days) relationship between daily precipitation and asthma ED visits separately by season. The patterns differ noticeably across seasons, suggesting effect modification by season. The association between precipitation and asthma ED visits varies by season. Winter shows essentially no harmful effect (flat or protective), while Spring and Fall show modest increases at heavy rain. Summer exhibits the strongest positive relationship, consistent with known mechanisms like thunderstorm asthma. These seasonal differences highlight the importance of considering effect modification in the precipitation–asthma link.
+
+## PM2.5 Adjustment
+
+Comparing cumulative exposure-response with and without PM2.5 as a covariate.
+
+```{r}
+model_pm25 <- glm(
+  asthma_total ~ cb_precip +
+    ns(time, df = time_df) +
+    # ns(temp_mean, df = 6) +   # TODO: add temperature
+    pm25_mean +
+    dow +
+    season,
+  family = quasipoisson(link = "log"),
+  data   = citywide
+)
+
+pred_pm25 <- crosspred(
+  cb_precip,
+  model_pm25,
+  at  = seq(0, max(citywide$ppt_mean, na.rm = TRUE), length.out = 100),
+  cen = 0
+)
+
+par(mfrow = c(1, 2), mar = c(4, 4, 3, 1))
+
+plot(pred_primary, "overall",
+     xlab = "Precipitation (mm)",
+     ylab = "Cumulative RR (lag 0–14)",
+     main = "Without PM2.5",
+     col = "steelblue",
+     ci.arg = list(col = adjustcolor("steelblue", 0.2)),
+     lwd = 2)
+abline(h = 1, lty = 2, col = "gray50")
+
+plot(pred_pm25, "overall",
+     xlab = "Precipitation (mm)",
+     ylab = "Cumulative RR (lag 0–14)",
+     main = "With PM2.5",
+     col = "darkred",
+     ci.arg = list(col = adjustcolor("darkred", 0.2)),
+     lwd = 2)
+abline(h = 1, lty = 2, col = "gray50")
+
+par(mfrow = c(1, 1))
+
+cat("\nPM2.5 coefficient (log):",
+    round(coef(model_pm25)["pm25_mean"], 5), "\n")
+cat("PM2.5 IRR:", round(exp(coef(model_pm25)["pm25_mean"]), 4), "\n")
+```
+
+Without PM2.5: Cumulative exposure-response from the primary model (no PM2.5 adjustment).
+
+WIth PM2.5: Cumulative curve after adding daily mean PM2.5 as a linear covariate. The shape and magnitude are almost unchanged, indicating that PM2.5 is not a major confounder of the precipitation–asthma relationship.
+
+# Model Diagnostics
+
+Deviance residual plots for the primary model.
+
+```{r}
+res <- residuals(model_primary, type = "deviance")
+
+# Match residuals to data rows (glm drops NA rows silently)
+res_idx   <- as.integer(names(res))
+res_dates <- citywide$date[res_idx]
+res_time  <- citywide$time[res_idx]
+
+par(mfrow = c(2, 2), mar = c(4, 4, 3, 1))
+
+# Residuals over time
+plot(res_dates, res,
+     pch = ".", col = adjustcolor("steelblue", 0.5),
+     xlab = "Date", ylab = "Deviance Residuals",
+     main = "Residuals Over Time")
+loess_fit  <- loess(res ~ res_time, span = 0.1, na.action = na.exclude)
+loess_pred <- predict(loess_fit, newdata = data.frame(res_time = res_time))
+lines(res_dates, loess_pred, col = "red")
+abline(h = 0, lty = 2)
+
+# Residuals vs fitted
+plot(fitted(model_primary), res,
+     pch = ".", col = adjustcolor("steelblue", 0.5),
+     xlab = "Fitted Values", ylab = "Deviance Residuals",
+     main = "Residuals vs Fitted")
+abline(h = 0, lty = 2)
+
+# QQ plot
+qqnorm(res, pch = ".", col = "steelblue", main = "Q-Q Plot of Residuals")
+qqline(res, col = "red")
+
+# ACF of residuals
+acf(res, lag.max = 21, main = "ACF of Residuals")
+
+par(mfrow = c(1, 1))
+```
+
+Assessing the goodness-of-fit and assumptions of the primary quasi-Poisson DLNM model, the model diagnostics are satisfactory. There is no evidence of major misspecification, strong residual trends, or problematic autocorrelation. The quasi-Poisson DLNM adequately captures the temporal structure and exposure-response relationship in the data.
+
+# Next Steps
+
+-   Obtain and merge PRISM daily mean temperature; add `ns(temp_mean, df = 6)` to model
+-   Re-run all models with temperature adjustment
+-   Finalize lag window based on sensitivity results
+-   Prepare publication-quality ggplot2 figures
+-   Write up lag structure and threshold effect interpretation
