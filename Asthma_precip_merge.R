@@ -131,7 +131,7 @@ pm25_all <- rbind(pm25_2016, pm25_2017, pm25_2018, pm25_2019) |>
 # and Richmond aka Staten Island)
 
 selected_counties <- c("New York", "Kings", "Queens", "Bronx", 
-                       "Richmond County")
+                       "Richmond")
 
 pm25_all <- pm25_all |> 
   filter(county %in% selected_counties)
@@ -139,14 +139,18 @@ pm25_all <- pm25_all |>
 # take the average pm25 daily mean conc for each county
 # across the sites per day
 pm25_all <- pm25_all |>
-  dplyr::group_by(county, date, state_fips_code, county_fips_code) |>
-  dplyr::summarise(pm25 = mean(daily_mean_pm2_5_concentration, 
+  group_by(county, date, state_fips_code, county_fips_code) |>
+  summarise(pm25 = mean(daily_mean_pm2_5_concentration, 
                                na.rm = TRUE), .groups = "drop")
 
 # standardize date before merging
 pm25_all <- pm25_all |>
   mutate(date = as.Date(date, format = "%m/%d/%Y")) |> 
-  rename(borough = county)
+  rename(borough = county) |> 
+  mutate(borough = recode(borough,
+                          "Kings" = "Brooklyn",
+                          "New York" = "Manhattan",
+                          "Richmond" = "Staten Island"))
   
 
 # merge with precip & asthma data
