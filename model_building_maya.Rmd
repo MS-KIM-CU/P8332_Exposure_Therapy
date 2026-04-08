@@ -1,5 +1,5 @@
 ---
-title: "Maya's Model Building"
+title: "Fixed Intercept and Interaction Models"
 author: "Maya Arnott"
 output: html_document
 ---
@@ -11,7 +11,7 @@ knitr::opts_chunk$set(echo = TRUE)
 ## 1. Data Prepration
 
 #### Libraries and load in our data
-```{r}
+```{r, include=FALSE}
 library(stringr)
 library(MASS)
 library(lmtest)
@@ -27,6 +27,7 @@ library(dplyr)
 library(tidycensus)
 library(tidyverse)
 library(ICC)
+library(gt)
 
 asthma_precip_pm25 <- read_csv("datasets/asthma_precip_pm25_clean.csv")
 
@@ -75,7 +76,7 @@ asthma_precip_pm25 <- asthma_precip_pm25 |>
 I created an offset population variable because the raw counts can be misleading. I used data from the`tidycensus` package to do this.
 
 ```{r}
-census_api_key("4469a6e8d98ef67d16af4d4b943bebffce79071e", install = TRUE)
+census_api_key(Sys.getenv("CENSUS_API_KEY"), overwrite = TRUE)
 
 # pop for years 2016 to 2019
 years <- c(2016, 2017, 2018, 2019)
@@ -141,7 +142,7 @@ dispersiontest(pois.model)
 
 According to the overdispersion test, there is evidence of significant overdispersion (dispersion = 2.20, p<.001), which justifies the use of a negative binomial model.
 
-##3. ICC
+## 3. ICC
 
 ```{r}
 # how much do daily visits cluster within borough?
@@ -158,12 +159,38 @@ ppt.ICC <- ICCest(borough, log_ppt_scaled, data = asthma_precip_pm25)
 ppt.ICC$ICC
 ```
 
+#### ICC Results Table
+```{r}
+icc_table <- data.frame(
+  Variable      = c("Asthma ED Visit Rate (per 100,000)", "Log Precipitation (scaled)"),
+  ICC           = c(round(asthma.ICC$ICC, 3), round(ppt.ICC$ICC, 3)),
+  Lower_CI      = c(round(asthma.ICC$LowerCI, 3), NA),
+  Upper_CI      = c(round(asthma.ICC$UpperCI, 3), NA),
+  Interpretation = c(
+    "68% of variation is between boroughs",
+    "No borough-level clustering"
+  )
+)
+
+icc_table |>
+  gt() |>
+  cols_label(
+    Variable       = "Variable",
+    ICC            = "ICC",
+    Lower_CI       = "95% CI Lower",
+    Upper_CI       = "95% CI Upper",
+    Interpretation = "Interpretation"
+  ) |>
+  tab_header(title = "Table 1. Intraclass Correlation Coefficients by Borough")
+```
+
 
 Asthma Rate ICC = 0.68. 68% of the total variation in daily asthma ED visit rates is attributable to between-borough differences, whereas only 32% is day-to-day within-borough variation. This justifies including borough fixed intercepts.
 
 Precipitation ICC = -0.001. This means that precipitation is not confounded by borough and the variation in rain is only temporal.
 
-##4. Between borough model (ecological)
+
+## 4. Between borough model (ecological)
 
 ```{r}
 dta_btwn <- asthma_precip_pm25 |> 
@@ -185,7 +212,7 @@ summary(mod.btwn)
 
 With 2 degrees of freedom, the model has very low statistical power, which justifies the use of a fixed intercept model.
 
-##5. Main Model: Borough Fixed Intercepts (no interactions)
+## 5. Main Model: Borough Fixed Intercepts (no interactions)
 
 ```{r}
 mod.fixed <- glm.nb(
@@ -210,13 +237,53 @@ rr_ppt <- paste0(
 rr_ppt
 ```
 
+#### Main Model Results Table
+
+```{r}
+
+mod.fixed |>
+  tidy(conf.int = TRUE, exponentiate = TRUE) |>
+  filter(!str_detect(term, "day_of_week")) |> 
+  mutate(
+    term = case_when(
+      term == "(Intercept)"          ~ "Intercept",
+      term == "log_ppt_scaled"       ~ "Log Precipitation (1 SD)",
+      term == "log_pm25_scaled"      ~ "Log PM2.5 (1 SD)",
+      term == "boroughBrooklyn"      ~ "Borough: Brooklyn vs Bronx",
+      term == "boroughManhattan"     ~ "Borough: Manhattan vs Bronx",
+      term == "boroughQueens"        ~ "Borough: Queens vs Bronx",
+      term == "boroughStaten Island" ~ "Borough: Staten Island vs Bronx",
+      term == "seasonSpring"         ~ "Season: Spring vs Fall",
+      term == "seasonSummer"         ~ "Season: Summer vs Fall",
+      term == "seasonWinter"         ~ "Season: Winter vs Fall",
+      term == "year2017"             ~ "Year: 2017 vs 2016",
+      term == "year2018"             ~ "Year: 2018 vs 2016",
+      term == "year2019"             ~ "Year: 2019 vs 2016",
+      TRUE ~ term
+    )
+  ) |>
+  select(term, estimate, conf.low, conf.high, p.value) |>
+  gt() |>
+  cols_label(
+    term      = "Variable",
+    estimate  = "Rate Ratio",
+    conf.low  = "95% CI Lower",
+    conf.high = "95% CI Upper",
+    p.value   = "p-value"
+  ) |>
+  fmt_number(columns = c(estimate, conf.low, conf.high), decimals = 3) |>
+  fmt(columns = p.value, fns = function(x) ifelse(x < 0.001, "<0.001", round(x, 3))) |>
+  tab_header(title = "Table 2. Borough Fixed Intercept Negative Binomial Model") |>
+  tab_footnote("Rate ratios and 95% CIs shown. Reference categories: Bronx (borough), Fall (season), 2016 (year). Offset = log(population).")
+```
+
 **`log_ppt_scaled`** A 1 standard deviation increase in log precipitation is associated with a 0.75% decrease in asthma ED visit rates, holding all other variables constant. This is statistically significant but indicates a very small effect on asthma ED visit rates.
 
 **`log_pm25_scaled`** The p-value was not significant.
 
-**Borough fixed-intercepts** All boroughs had an association with asthma ED visits that was were highly significant. Bronx had the highest asthma ED visit rate, and all other boroughs were significantly lower.
+**'borough'** All boroughs had an association with asthma ED visits that was were highly significant. Bronx had the highest asthma ED visit rate, and all other boroughs were significantly lower.
 
-**Season** All seasons had an association with asthma ED visits that was were highly significant. The summer season was highly protective and the spring season showed a slightly elevated association with asthma ED visits, possibly due to an overlap with allergy season.
+**'season'** All seasons had an association with asthma ED visits that was were highly significant. The summer season was highly protective and the spring season showed a slightly elevated association with asthma ED visits, possibly due to an overlap with allergy season.
 
 #### Marginal Effects plot
 ```{r}
@@ -224,7 +291,7 @@ rr_ppt
 ```
 
 
-##6. Effect Modification - Borough Interaction 
+## 6. Effect Modification - Borough Interaction 
 
 ```{r}
 
@@ -246,7 +313,7 @@ mod.full <- glm.nb(
 lrtest(mod.fixed, mod.full)
 
 # anova test
-Anova(model.full, type = "III")
+Anova(mod.full, type = "III")
 ```
 
 The LRT p-value is 0.6492, which means that the interaction term does not significantly improve the model fit. Although we proved that boroughs have different baseline asthma rates, precipitation affects them similarly and the association does not differ significantly across boroughs.
@@ -277,11 +344,9 @@ summary(model.cat)
 
 Only light and moderate rain are significant, whereas heavy rain was not significant.
 
-Could there be a lag effect of precipitation? Could it be that mold or humidity spikes a couple days after rain? Or perhaps there is no significant association. It could be the case that on heavy rain days people stay home and avoid the ED, even if they do have symptoms.
-
 ## 8. Storm Events Analysis
 
-I want to add storm event type data from the NOAA Storm Events database.
+I am adding storm event date and type data from the NOAA Storm Events database.
 
 ```{r}
 noaa_storms <- read_csv("datasets/noaa_storm_data.csv") |> 
@@ -318,6 +383,7 @@ noaa_storms <- noaa_storms |>
 
 ```
 
+#### Merge and create lag after storm type.
 ```{r}
 storm_events <- noaa_storms |> 
   select(borough, date, event_type) |> 
@@ -380,5 +446,54 @@ mod.storm.cumulative <- glm.nb(
 )
 
 summary(mod.storm.cumulative)
+```
+
+#### Model Comparison Table
+``` {r}
+model_comparison <- data.frame(
+  Model = c(
+    "1. Poisson (baseline)",
+    "2. NB Fixed Intercepts (primary)",
+    "3. NB + Borough Interaction",
+    "4. NB Categorical Precipitation",
+    "5. NB + Storm Events"
+  ),
+  AIC = c(
+    AIC(pois.model),
+    AIC(mod.fixed),
+    AIC(mod.full),
+    AIC(model.cat),
+    AIC(model.storm.lag)
+  ),
+  Df = c(
+    pois.model$df.residual,
+    mod.fixed$df.residual,
+    mod.full$df.residual,
+    model.cat$df.residual,
+    model.storm.lag$df.residual
+  ),
+  Notes = c(
+    "Overdispersion confirmed, NB preferred",
+    "Primary model",
+    "LRT p=0.62, interaction not significant",
+    "Sensitivity analysis",
+    "Storm day effect: -6.6%, lags not significant"
+  )
+)
+
+model_comparison |>
+  gt() |>
+  cols_label(
+    Model = "Model",
+    AIC   = "AIC",
+    Df    = "Residual df",
+    Notes = "Notes"
+  ) |>
+  fmt_number(columns = AIC, decimals = 1) |>
+  tab_header(title = "Table 3. Model Comparison Summary") |>
+  tab_style(
+    style = cell_fill(color = "lightblue"),
+    locations = cells_body(rows = 2)  # highlight primary model
+  )
 ```
 
