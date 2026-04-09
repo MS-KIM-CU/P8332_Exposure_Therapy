@@ -86,13 +86,6 @@ citywide <- citywide %>%
   )
 ```
 
-## Temperature Data
-
-```{r}
-# TODO: merge PRISM daily mean temperature
-# temp_data <- read_csv("datasets/temperature_data.csv")
-```
-
 # Exploratory Data Analysis
 
 ## Summary Statistics
@@ -194,7 +187,7 @@ summary(cb_precip)
 
 ## Primary Model
 
-Quasi-Poisson GLM: `log(E[Y]) = α + cb(precip, lag 0–14) + ns(time, 7df/yr) + DOW + season`. Temperature spline to be added.
+Quasi-Poisson GLM: `log(E[Y]) = α + cb(precip, lag 0–14) + ns(time, 7df/yr) + DOW + season`.
 
 ```{r}
 n_years <- as.numeric(max(citywide$date) - min(citywide$date)) / 365.25
@@ -203,7 +196,6 @@ time_df <- round(7 * n_years)
 model_primary <- glm(
   asthma_total ~ cb_precip +
     ns(time, df = time_df) +
-    # ns(temp_mean, df = 6) +    # TODO: add temperature
     dow +
     season,
   family = quasipoisson(link = "log"),
@@ -543,7 +535,6 @@ Comparing cumulative exposure-response with and without PM2.5 as a covariate.
 model_pm25 <- glm(
   asthma_total ~ cb_precip +
     ns(time, df = time_df) +
-    # ns(temp_mean, df = 6) +   # TODO: add temperature
     pm25_mean +
     dow +
     season,
@@ -634,8 +625,6 @@ Assessing the goodness-of-fit and assumptions of the primary quasi-Poisson DLNM 
 
 # Next Steps
 
--   Obtain and merge PRISM daily mean temperature; add `ns(temp_mean, df = 6)` to model
--   Re-run all models with temperature adjustment
 -   Finalize lag window based on sensitivity results
 -   Prepare publication-quality ggplot2 figures
 -   Write up lag structure and threshold effect interpretation
