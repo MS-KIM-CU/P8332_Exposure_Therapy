@@ -1,0 +1,349 @@
+  ---
+title: "Asthma ED Visits and Precipitation Analysis"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+```{r libraries}
+library(here)
+library(readr)
+library(dplyr)
+library(lubridate)
+library(splines)
+library(mgcv)
+library(ggplot2)
+```
+
+```{r paths}
+# Set paths
+DataPath   <- here::here()          
+OutputPath <- here::here('output')
+dir.create(OutputPath, showWarnings = FALSE, recursive = TRUE)
+```
+
+```{r load-data}
+# Read in data
+dta <- read_csv(here::here(DataPath, "asthma_precip_age.csv"))
+
+# aggregate to NYC level: sum ER counts, average ppt across boroughs
+# per date and age group
+dta.nyc <- dta %>%
+  group_by(date, age) %>%
+  summarize(
+    asthma_er_count = sum(asthma_er_count, na.rm = TRUE),
+    ppt             = mean(ppt,             na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# clean age group labels
+dta.nyc <- dta.nyc %>%
+  mutate(age = case_when(
+    age == "Ages 0-4 years"   ~ "0-4",
+    age == "Ages 5-17 years"  ~ "5-17",
+    age == "Ages 18-64 years" ~ "18-64",
+    age == "Ages 65+ years"   ~ "65+",
+    age == "All age groups"   ~ "All",
+    TRUE                      ~ age
+  ),
+  age = factor(age, levels = c("All", "0-4", "5-17", "18-64", "65+")))
+
+dta.nyc %>% count(date) %>% summary()
+
+# extract day of week
+dta.nyc <- dta.nyc %>%
+  mutate(DayofWeek = as.character(wday(date, label = TRUE)))
+
+# factor with Sunday-anchored week order
+dta.nyc$DayofWeek <- factor(dta.nyc$DayofWeek,
+                            levels = c("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"))
+
+# compute number of years for spline df
+yr_num <- length(unique(year(dta.nyc$date)))
+
+# split data into one dataframe per age group
+dta.list <- dta.nyc %>%
+  group_by(age) %>%
+  group_split() %>%
+  setNames(levels(dta.nyc$age))
+```
+
+```{r primary-model}
+# base model: log1p(ppt) as ns(1 df), time spline 4 df/year
+
+fit_qp <- function(df) {
+  glm(asthma_er_count ~
+        ns(log1p(ppt), df = 1) +
+        DayofWeek +
+        ns(date, df = 24),
+      family = "quasipoisson",
+      data   = df)
+}
+
+mods.primary <- lapply(dta.list, fit_qp)
+
+extract_irr <- function(mod) {
+  coef.mat <- summary(mod)$coef
+  coef_ppt <- coef.mat[2, 1]
+  se_ppt   <- coef.mat[2, 2]
+  data.frame(
+    irr        = exp(coef_ppt),
+    lci        = exp(coef_ppt - 1.96 * se_ppt),
+    uci        = exp(coef_ppt + 1.96 * se_ppt),
+    dispersion = summary(mod)$dispersion
+  )
+}
+
+results.primary <- bind_rows(lapply(mods.primary, extract_irr), .id = "age")
+results.primary
+```
+
+```{r sensitivity-lag}
+# sensitivity 1: lag (1-3 days)
+
+dta.nyc <- dta.nyc %>% arrange(date)
+
+dta.list.lag <- lapply(dta.list, function(df) {
+  df %>% arrange(date) %>%
+    mutate(
+      ppt_lag1 = (ppt + lag(ppt, 1)) / 2,
+      ppt_lag2 = (ppt + lag(ppt, 1) + lag(ppt, 2)) / 3,
+      ppt_lag3 = (ppt + lag(ppt, 1) + lag(ppt, 2) + lag(ppt, 3)) / 4
+    )
+})
+
+fit_qp_lag <- function(df, lag_var) {
+  glm(as.formula(paste0(
+    "asthma_er_count ~ ns(log1p(", lag_var, "), df = 1) + DayofWeek + ns(date, df = 4 * yr_num)")),
+    family = "quasipoisson",
+    data   = df)
+}
+
+lag_vars <- c("ppt_lag1", "ppt_lag2", "ppt_lag3")
+
+mods.sens.lag <- lapply(lag_vars, function(lv) {
+  lapply(dta.list.lag, fit_qp_lag, lag_var = lv)
+})
+names(mods.sens.lag) <- lag_vars
+
+results.sens.lag <- bind_rows(
+  lapply(names(mods.sens.lag), function(lv) {
+    bind_rows(lapply(mods.sens.lag[[lv]], extract_irr), .id = "age") %>%
+      mutate(lag = lv)
+  })
+)
+results.sens.lag
+```
+
+```{r sensitivity-ppt-df}
+# sensitivity 2: ppt spline df (1-3)
+
+ppt_dfs <- 1:3
+
+fit_qp_pptdf <- function(df, ppt_df) {
+  glm(as.formula(paste0(
+    "asthma_er_count ~ ns(log1p(ppt), df = ", ppt_df, ") + DayofWeek + ns(date, df = 4 * yr_num)")),
+    family = "quasipoisson",
+    data   = df)
+}
+
+mods.sens.ppt <- lapply(ppt_dfs, function(pd) {
+  lapply(dta.list, fit_qp_pptdf, ppt_df = pd)
+})
+names(mods.sens.ppt) <- paste0("ppt_df", ppt_dfs)
+
+results.sens.ppt <- bind_rows(
+  lapply(names(mods.sens.ppt), function(pd) {
+    bind_rows(lapply(mods.sens.ppt[[pd]], extract_irr), .id = "age") %>%
+      mutate(ppt_df = pd)
+  })
+)
+results.sens.ppt
+```
+
+```{r sensitivity-time-df}
+# sensitivity 3: time spline df (24-32, i.e. 6-8 df/year)
+
+sens_df <- 24:32
+
+fit_qp_timedf <- function(df, df_time) {
+  glm(as.formula(paste0(
+    "asthma_er_count ~ ns(log1p(ppt), df = 1) + DayofWeek + ns(date, df = ", df_time, ")")),
+    family = "quasipoisson",
+    data   = df)
+}
+
+mods.sens.time <- lapply(sens_df, function(dt) {
+  lapply(dta.list, fit_qp_timedf, df_time = dt)
+})
+names(mods.sens.time) <- paste0("df", sens_df)
+
+results.sens.time <- bind_rows(
+  lapply(names(mods.sens.time), function(dt) {
+    bind_rows(lapply(mods.sens.time[[dt]], extract_irr), .id = "age") %>%
+      mutate(time_df = dt)
+  })
+)
+results.sens.time
+```
+
+```{r plot-timeseries-daily}
+# set age factor order for all plots
+
+dta.nyc$age <- factor(dta.nyc$age, levels = c("All", "0-4", "5-17", "18-64", "65+"))
+
+yr_num <- length(unique(year(dta.nyc$date)))
+
+# 1. time series scatter of daily ED visits by age group
+
+p <- ggplot(dta.nyc, aes(date, asthma_er_count)) +
+  geom_point(color = "mediumpurple3", alpha = 0.3, size = 0.8) +
+  facet_grid(age ~ ., scales = "free_y") +
+  labs(x = "Date", y = "Daily asthma ED visits") +
+  theme_bw()
+png(here::here(OutputPath, "TimeSeries_Asthma_dailyObs.png"), 
+    width = 1200, height = 800)
+print(p)
+dev.off()
+p
+```
+
+```{r plot-timeseries-trends}
+# 2. smoothed trend: seasonal + long-term by age group
+
+p <- ggplot(dta.nyc, aes(date, asthma_er_count)) +
+  geom_smooth(color = "mediumpurple3", method = lm,
+              formula = y ~ ns(x, df = 4 * yr_num)) +
+  geom_smooth(color = "darkorange2", method = lm,
+              formula = y ~ ns(x, df = 1 * yr_num)) +
+  facet_grid(age ~ ., scales = "free_y") +
+  labs(x = "Date", y = "Daily asthma ED visits",
+       caption = "Purple = seasonal trend (4 df/year)  |  Orange = long-term trend (1 df/year)") +
+  theme_bw()
+png(here::here(OutputPath, "TimeSeries_Asthma_trends.png"),
+    width = 1200, height = 800)
+print(p)
+dev.off()
+p
+```
+
+```{r plot-precipitation}
+# 3. precipitation time series
+
+dta.ppt <- dta.nyc %>% filter(age == "All")
+
+p <- ggplot(dta.ppt, aes(date, ppt)) +
+  geom_line(color = "cadetblue3", alpha = 0.6) +
+  geom_smooth(color = "cadetblue4", method = lm,
+              formula = y ~ ns(x, df = 4 * yr_num)) +
+  labs(x = "Date", y = "Precipitation (mm)") +
+  theme_bw()
+png(here::here(OutputPath, "TimeSeries_Precipitation.png"),
+    width = 1200, height = 400)
+print(p)
+dev.off()
+p
+```
+
+```{r plot-dow}
+# 4. day of week bar chart by age group
+
+dta.dow <- dta.nyc %>%
+  group_by(DayofWeek, age) %>%
+  summarize(meanED = mean(asthma_er_count), .groups = "drop")
+
+p <- ggplot(dta.dow, aes(DayofWeek, meanED)) +
+  geom_bar(stat = "identity", fill = "mediumpurple3") +
+  facet_grid(age ~ ., scales = "free_y") +
+  labs(x = "Day of the week", y = "Mean daily asthma ED visits") +
+  theme_bw()
+png(here::here(OutputPath, "DoW_Asthma_byAge.png"),
+    width = 1200, height = 800)
+print(p)
+dev.off()
+p
+```
+
+```{r plot-seasonal}
+# 5. seasonal plot: average ED visits by month by age group
+
+dta.nyc <- dta.nyc %>%
+  mutate(month = factor(month(date, label = TRUE),
+                        levels = c("Jan","Feb","Mar","Apr","May","Jun",
+                                   "Jul","Aug","Sep","Oct","Nov","Dec")))
+
+dta.month <- dta.nyc %>%
+  group_by(month, age) %>%
+  summarize(meanED = mean(asthma_er_count), .groups = "drop")
+
+p <- ggplot(dta.month, aes(month, meanED, group = age)) +
+  geom_line(color = "mediumpurple3") +
+  geom_point(color = "mediumpurple4") +
+  facet_grid(age ~ ., scales = "free_y") +
+  labs(x = "Month", y = "Mean daily asthma ED visits") +
+  theme_bw()
+png(here::here(OutputPath, "Seasonal_Asthma_byAge.png"),
+    width = 1200, height = 800)
+print(p)
+dev.off()
+p
+```
+
+```{r plot-precipitation-smoothed}
+# filter to one row per date (ppt is identical across age groups)
+dta.ppt <- dta.nyc %>% filter(age == "All")
+
+yr_num <- length(unique(year(dta.ppt$date)))
+
+# smoothed precipitation time series
+p <- ggplot(dta.ppt, aes(date, ppt)) +
+  geom_point(color = "cadetblue3", alpha = 0.3, size = 0.8) +
+  geom_smooth(color = "cadetblue4", method = lm,
+              formula = y ~ ns(x, df = 4 * yr_num)) +
+  geom_smooth(color = "darkorange2", method = lm,
+              formula = y ~ ns(x, df = 1 * yr_num)) +
+  labs(x = "Date",
+       y = "Precipitation (mm)",
+       caption = "Blue = seasonal trend (4 df/year)  |  Orange = long-term trend (1 df/year)") +
+  theme_bw()
+png(here::here(OutputPath, "TimeSeries_Precipitation_smoothed.png"),
+    width = 1200, height = 400)
+print(p)
+dev.off()
+p
+# 6. forest plot of IRRs from primary model
+
+results.primary$age <- factor(results.primary$age,
+                              levels = c("All", "0-4", "5-17", "18-64", "65+"))
+
+p <- ggplot(results.primary, aes(x = irr, y = age)) +
+  geom_point(color = "mediumpurple3", size = 3) +
+  geom_errorbarh(aes(xmin = lci, xmax = uci),
+                 height = 0.2, color = "mediumpurple3") +
+  geom_vline(xintercept = 1, linetype = "dashed", color = "grey50") +
+  labs(x = "Incidence rate ratio (95% CI)",
+       y = "Age group",
+       caption = "Primary model: ns(log1p(ppt), df=1) + DayofWeek + ns(date, df=28)") +
+  theme_bw()
+png(here::here(OutputPath, "ForestPlot_IRR_byAge.png"),
+    width = 800, height = 500)
+print(p)
+dev.off()
+p
+```
+
+```{r final-model}
+#final model after sensitivity analysis 
+fit_qp <- function(df) {
+  glm(asthma_er_count ~
+        ns(log1p(ppt), df = 1) +
+        DayofWeek +
+        ns(date, df = 28),
+      family = "quasipoisson",
+      data   = df)
+}
+
+glimpse(dta.nyc)
+```
