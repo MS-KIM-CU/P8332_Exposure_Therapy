@@ -25,6 +25,7 @@ library(ggplot2)
 library(dplyr)
 library(readr)
 library(tidyr)
+library(tidyverse)
 ```
 
 # Data Preparation
@@ -579,6 +580,7 @@ cat("PM2.5 IRR:", round(exp(coef(model_pm25)["pm25_mean"]), 4), "\n")
 Without PM2.5: Cumulative exposure-response from the primary model (no PM2.5 adjustment).
 
 WIth PM2.5: Cumulative curve after adding daily mean PM2.5 as a linear covariate. The shape and magnitude are almost unchanged, indicating that PM2.5 is not a major confounder of the precipitation–asthma relationship.
+
 
 # Model Diagnostics
 
