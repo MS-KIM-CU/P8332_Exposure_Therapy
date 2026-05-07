@@ -15,7 +15,6 @@ if (!dir.exists("outputs")) {
 
 ## 1. Data Prepration
 
-#### Libraries and load in our data
 ```{r, include=FALSE}
 library(stringr)
 library(MASS)
@@ -410,110 +409,6 @@ summary(model.cat)
 
 Only light and moderate rain are significant, whereas heavy rain was not significant.
 
-## 8. Storm Events Analysis
-
-I am adding storm event date and type data from the NOAA Storm Events database.
-
-```{r}
-noaa_storms <- read_csv("datasets/noaa_storm_data.csv") |> 
-  janitor::clean_names() |> 
-  filter(event_type %in% c(
-    "Heavy Rain", 
-    "Flash Flood", 
-    "Flood", 
-    "Tropical Storm", 
-    "Tropical Depression",
-    "Coastal Flood"
-  )) |>  # standardize all borough names
-   mutate(borough = case_when(
-    str_detect(cz_name_str, regex("BRONX", ignore_case = TRUE)) ~ "Bronx",
-    str_detect(cz_name_str, regex("KINGS|BROOKLYN", ignore_case = TRUE)) ~ "Brooklyn",
-    str_detect(cz_name_str, regex("NEW YORK|MANHATTAN", ignore_case = TRUE)) ~ "Manhattan",
-    str_detect(cz_name_str, regex("QUEENS", ignore_case = TRUE)) ~ "Queens",
-    str_detect(cz_name_str, regex("RICHMOND|STATEN", ignore_case = TRUE)) ~ "Staten Island",
-    TRUE ~ NA_character_
-  ))
-
-# convert begin and end dates to date class
-noaa_storms <- noaa_storms |> 
-  mutate(
-  begin_date = mdy(begin_date), 
-  end_date = mdy(end_date)
-) |> 
-  # expand each storm over its date range and borough
-  rowwise() |> 
-  mutate(date = list(seq.Date(begin_date, end_date, by = "day"))) |> 
-  unnest(date) |> 
-  ungroup() |> 
-  select(borough, event_type, date, everything())
-
-```
-
-#### Merge and create lag after storm type.
-```{r}
-storm_events <- noaa_storms |> 
-  select(borough, date, event_type) |> 
-  group_by(borough, date) |> 
-  summarize(
-     storm_event = paste(unique(event_type), collapse = ", "),
-    .groups = "drop"
-  )
-
-# merge with asthma_precip_pm25
-asthma_model_df <- asthma_precip_pm25 |> 
-  left_join(storm_events |> select(borough, date, storm_event), by = c("borough", "date")) |> 
-   mutate(
-    storm_event = if_else(is.na(storm_event), 0, 1)
-   )
-
-# create lags for storm events
-asthma_model_df <- asthma_model_df |> 
-  arrange(borough, date) |> 
-  group_by(borough) |> 
-  mutate(
-    post_storm1 = lag(storm_event, 1, default = 0),
-    post_storm2 = lag(storm_event, 2, default = 0),
-    post_storm3 = lag(storm_event, 3, default = 0),
-    storm_cum3  = storm_event + post_storm1 + post_storm2
-  ) |> 
-  ungroup()
-
-# convert to factors
-asthma_model_df <- asthma_model_df |> 
-  mutate(
-    storm_event = factor(storm_event, levels = c(0,1), labels = c("None","Storm")),
-    post_storm1 = factor(post_storm1, levels = c(0,1), labels = c("None","PostStorm1")),
-    post_storm2 = factor(post_storm2, levels = c(0,1), labels = c("None","PostStorm2")),
-    post_storm3 = factor(post_storm3, levels = c(0,1), labels = c("None","PostStorm3"))
-  )
-
-# run model with storm lag
-model.storm.lag <- glm.nb(
-  asthma_er_count ~ log_ppt_scaled + log_pm25_scaled +
-    storm_event + post_storm1 + post_storm2 +
-    borough + season + day_of_week + year +
-    offset(log(population)),
-  data = asthma_model_df
-)
-
-summary(model.storm.lag)
-```
-
-On storm days, asthma ER visits are significantly lower. There is a 6.6% decrease in asthma ER visits on storm days. The lagged effects a day after the storm (`post_storm1`) are not significant (p = 0.525), and we see the same story two days after a storm (`post_storm2`, p = 0.589).
-
-#### Quantifying cumulative exposure over 3 days post-storm.
-
-```{r}
-mod.storm.cumulative <- glm.nb(
-  asthma_er_count ~ log_ppt_scaled + log_pm25_scaled + storm_cum3 +
-    borough + season + day_of_week + year +
-    offset(log(population)),
-  data = asthma_model_df
-)
-
-summary(mod.storm.cumulative)
-```
-
 #### Model Comparison Table
 ``` {r}
 model_comparison <- data.frame(
@@ -522,28 +417,24 @@ model_comparison <- data.frame(
     "2. NB Fixed Intercepts (primary)",
     "3. NB + Borough Interaction",
     "4. NB Categorical Precipitation",
-    "5. NB + Storm Events"
   ),
   AIC = c(
     AIC(pois.model),
     AIC(mod.fixed),
     AIC(mod.full),
     AIC(model.cat),
-    AIC(model.storm.lag)
   ),
   Df = c(
     pois.model$df.residual,
     mod.fixed$df.residual,
     mod.full$df.residual,
     model.cat$df.residual,
-    model.storm.lag$df.residual
   ),
   Notes = c(
     "Overdispersion confirmed, NB preferred",
     "Primary model",
     "LRT p=0.62, interaction not significant",
     "Sensitivity analysis",
-    "Storm day effect: -6.6%, lags not significant"
   )
 )
 
