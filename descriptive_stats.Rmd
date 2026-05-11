@@ -1,5 +1,5 @@
 ---
-title: "Descriptive Statistics for Paper"
+title: "Descriptive Statistics & Map for Paper"
 output: html_document
 ---
 
@@ -12,6 +12,9 @@ library(tidyverse)
 library(lubridate)
 library(gt)
 library(gtExtras)
+library(tigris)
+library(sf)
+library(patchwork)
 ```
 
 ```{r load-data}
@@ -265,3 +268,56 @@ table_df |>
     heading.subtitle.font.size = px(12)
   )
 ```
+
+### Choropleth map
+
+```{r choropleth-map}
+nyc_fips <- c("36005", "36047", "36061", "36081", "36085")
+
+options(tigris_use_cache = TRUE)
+nyc_sf <- counties(state = "NY", cb = TRUE, year = 2019) |>
+  filter(GEOID %in% nyc_fips) |>
+  mutate(borough = case_when(
+    GEOID == "36005" ~ "Bronx",
+    GEOID == "36047" ~ "Brooklyn",
+    GEOID == "36061" ~ "Manhattan",
+    GEOID == "36081" ~ "Queens",
+    GEOID == "36085" ~ "Staten Island"
+  ))
+
+borough_stats <- final_dat |>
+  group_by(borough) |>
+  summarise(mean_rate = mean(rate_per_100k, na.rm = TRUE), .groups = "drop")
+
+map_dat <- nyc_sf |>
+  left_join(borough_stats, by = "borough")
+
+ggplot(map_dat) +
+  geom_sf(aes(fill = mean_rate), color = "white", linewidth = 0.6) +
+  geom_sf_text(aes(label = borough), size = 3, fontface = "bold", color = "white") +
+  scale_fill_distiller(
+    palette   = "Reds",
+    direction = 1,
+    name      = "Mean daily asthma\nED visits per 100,000"
+  ) +
+  labs(title = "Mean Daily Asthma ED Visit Rate by NYC Borough, 2016–2019") +
+  theme_void(base_size = 12) +
+  theme(
+    plot.title       = element_text(face = "bold", size = 13, hjust = 0.5,
+                                    margin = margin(b = 8)),
+    plot.background  = element_rect(fill = "white", color = NA),
+    panel.background = element_rect(fill = "white", color = NA),
+    legend.position  = "right",
+    legend.title     = element_text(size = 10),
+    legend.text      = element_text(size = 9)
+  )
+
+ggsave(
+  filename = "outputs/map_asthma_rate.png",
+  plot     = last_plot(),
+  width    = 8,
+  height   = 5,
+  dpi      = 300
+)
+```
+
