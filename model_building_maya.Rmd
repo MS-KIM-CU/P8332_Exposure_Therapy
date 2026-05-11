@@ -1,5 +1,5 @@
 ---
-title: "Fixed Intercept and Interaction Models"
+title: "Borough Level Analysis: Exploring Interactions"
 author: "Maya Arnott"
 output: html_document
 ---
@@ -77,7 +77,7 @@ asthma_precip_pm25 <- asthma_precip_pm25 |>
 
 ```
 
-I created an offset population variable because the raw counts can be misleading. I used data from the`tidycensus` package to do this.
+An offset population variable was created because the raw counts can be misleading. Data was obtained from the`tidycensus` package.
 
 ```{r}
 census_api_key(Sys.getenv("CENSUS_API_KEY"), overwrite = TRUE)
@@ -109,15 +109,11 @@ asthma_precip_pm25 <- asthma_precip_pm25 |>
   left_join(borough_pop, by = c("borough", "year"))
 ```
 
-Temperature is likely a confounder in this relationship, and should be added to the model. I am assuming that the temperature across boroughs is fairly similar, and therefore only using data from one weather station in Central Park for average temperature will suffice.
+Temperature is likely a confounder in this relationship, and should be added to the model. Through NOAA, there is only data available from one weather station in Central Park, so the assumption is that the temperature across boroughs is fairly similar.
 
 ```{r}
-# Download from NOAA Climate Data Online: station USW00094728 (Central Park),
-# Daily Summaries, 2016-01-01 to 2019-12-31, TMAX + TMIN selected.
-# Save the downloaded CSV to datasets/central_park_temp.csv.
-
-# NOAA CDO exports TMAX/TMIN in tenths of degrees C
-temp_daily <- read_csv("datasets/central_park_temp.csv") |>
+# NOAA CDO exports tmax/tmin in degrees C
+temp_daily <- read_csv("datasets/daily_temp_nyc.csv") |>
   mutate(
     date     = as.Date(DATE),
     temp_avg = (TMAX / 10 + TMIN / 10) / 2
@@ -130,7 +126,7 @@ asthma_precip_pm25 <- asthma_precip_pm25 |>
 
 #### Scale variables
 
-I scaled `log_ppt` and `temperature` because this helps models converge and makes coefficients across covariates comparable. `log_pm25` is scaled here as well for use in the PM2.5-adjusted sensitivity analysis only — it is excluded from the main models because PM2.5 is a likely mediator on the causal pathway (precipitation washes particulate matter from the air, so adjusting for it in the primary model would constitute over-adjustment).
+`log_ppt` and `temperature` are scaled because this helps models converge and makes coefficients across covariates comparable. `log_pm25` is scaled here as well for use in the PM2.5-adjusted sensitivity analysis only. It is excluded from the main models because PM2.5 is a likely mediator on the causal pathway (precipitation washes particulate matter from the air, so adjusting for it in the primary model would constitute over-adjustment).
 
 ```{r}
 asthma_precip_pm25 <- asthma_precip_pm25 |>
@@ -351,7 +347,7 @@ ggsave(
 )
 ```
 
-**`log_ppt_scaled`** A 1 SD increase in log precipitation is associated with a 0.7% decrease in asthma ED visit rates (RR = 0.993, 95% CI: 0.988–0.997, p = 0.005). The direction is negative — rain may reduce same-day asthma burden by washing PM2.5 and ozone from the air. The effect is statistically significant but small in magnitude.
+**`log_ppt_scaled`** A 1 SD increase in log precipitation is associated with a 0.7% decrease in asthma ED visit rates (RR = 0.993, 95% CI: 0.988–0.998, p = 0.005). The direction is negative — rain may reduce same-day asthma burden by washing PM2.5 and ozone from the air. The effect is statistically significant but small in magnitude.
 
 **`temp_scaled`** A 1 SD increase in daily temperature is associated with a 1.3% increase in asthma ED visit rates (RR = 1.013, 95% CI: 1.005–1.021, p = 0.002). Because season is already in the model, this captures within-season day-to-day thermal variation — warmer days relative to the seasonal average carry modestly higher asthma risk, likely through heat-related airway inflammation and higher ozone exposure.
 
@@ -361,40 +357,52 @@ ggsave(
 
 #### Marginal Effects plot
 ```{r}
-# store scale parameters for back-transformation to mm
+# scale parameters for back-transformation to mm
 log_ppt_mean <- mean(asthma_precip_pm25$log_ppt, na.rm = TRUE)
 log_ppt_sd   <- sd(asthma_precip_pm25$log_ppt, na.rm = TRUE)
 
-# borough-specific mean populations so rates are anchored correctly per borough
-borough_pop_ref <- asthma_precip_pm25 |>
-  group_by(borough) |>
-  summarize(population = mean(population, na.rm = TRUE), .groups = "drop")
-
-# clip x-axis at 99th percentile to avoid data-sparse tail
+# clip at 99th percentile
 ppt_cap <- quantile(asthma_precip_pm25$ppt, 0.99, na.rm = TRUE)
-
 ppt_seq <- seq(
   min(asthma_precip_pm25$log_ppt_scaled, na.rm = TRUE),
-  as.numeric(scale(log(ppt_cap + 1), center = log_ppt_mean, scale = log_ppt_sd)),
+  (log(ppt_cap + 1) - log_ppt_mean) / log_ppt_sd,
   length.out = 200
 )
 
-pred_grid <- expand.grid(
-  log_ppt_scaled = ppt_seq,
-  borough        = levels(asthma_precip_pm25$borough),
-  temp_scaled    = 0
-) |>
-  left_join(borough_pop_ref, by = "borough")
+# compute predictions directly from model coefficients + vcov (delta method)
+# population offset cancels when converting count to rate
+coefs <- coef(mod.fixed)
+vc    <- vcov(mod.fixed)
 
-marg_preds <- predictions(mod.fixed, newdata = pred_grid) |>
-  mutate(
-    ppt_mm   = exp(log_ppt_scaled * log_ppt_sd + log_ppt_mean) - 1,
-    rate     = estimate  / population * 100000,
-    rate_low = conf.low  / population * 100000,
-    rate_hi  = conf.high / population * 100000
+borough_terms <- c(
+  "Bronx"         = NA,
+  "Brooklyn"      = "boroughBrooklyn",
+  "Manhattan"     = "boroughManhattan",
+  "Queens"        = "boroughQueens",
+  "Staten Island" = "boroughStaten Island"
+)
+
+marg_preds <- purrr::map_dfr(names(borough_terms), function(bor) {
+  bor_term <- borough_terms[bor]
+  if (is.na(bor_term)) {
+    terms <- c("(Intercept)", "log_ppt_scaled")
+    W     <- cbind(1, ppt_seq)
+  } else {
+    terms <- c("(Intercept)", bor_term, "log_ppt_scaled")
+    W     <- cbind(1, 1, ppt_seq)
+  }
+  lp    <- as.numeric(W %*% coefs[terms])
+  se_lp <- sqrt(diag(W %*% vc[terms, terms] %*% t(W)))
+  data.frame(
+    borough  = bor,
+    ppt_mm   = exp(ppt_seq * log_ppt_sd + log_ppt_mean) - 1,
+    rate     = 100000 * exp(lp),
+    rate_low = 100000 * exp(lp - 1.96 * se_lp),
+    rate_hi  = 100000 * exp(lp + 1.96 * se_lp)
   )
+})
 
-# observed precipitation values for the rug (one row per date, not per borough)
+# observed precipitation for tick marks on plot
 ppt_obs <- asthma_precip_pm25 |>
   distinct(date, ppt) |>
   filter(ppt <= ppt_cap)
@@ -424,7 +432,7 @@ ggplot(marg_preds, aes(x = ppt_mm, y = rate, color = borough, fill = borough)) +
   coord_cartesian(xlim = c(0, ppt_cap)) +
   labs(
     title    = "Predicted Asthma ED Visit Rate by Precipitation and Borough",
-    subtitle = "Parallel slopes indicate no borough × precipitation interaction; shading = 95% CI; rug = observed daily precipitation; x-axis capped at 99th percentile",
+    subtitle = "Parallel slopes indicate no borough × precipitation interaction; shading = 95% CI; tick marks = observed daily precipitation; x-axis capped at 99th percentile",
     x        = "Daily Precipitation (mm)",
     y        = "Predicted Asthma ED Visits per 100,000",
     color    = "Borough",
