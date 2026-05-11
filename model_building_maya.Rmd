@@ -112,11 +112,10 @@ asthma_precip_pm25 <- asthma_precip_pm25 |>
 Temperature is likely a confounder in this relationship, and should be added to the model. Through NOAA, there is only data available from one weather station in Central Park, so the assumption is that the temperature across boroughs is fairly similar.
 
 ```{r}
-# NOAA CDO exports tmax/tmin in degrees C
 temp_daily <- read_csv("datasets/daily_temp_nyc.csv") |>
   mutate(
     date     = as.Date(DATE),
-    temp_avg = (TMAX / 10 + TMIN / 10) / 2
+    temp_avg = (TMAX + TMIN) / 2
   ) |>
   select(date, temp_avg)
 

@@ -120,6 +120,7 @@ fmt_n_pct <- function(n, total) {
 
 ```{r build-table-data}
 boroughs_ordered <- c("Bronx", "Brooklyn", "Manhattan", "Queens", "Staten Island")
+ppt_levels <- levels(final_dat$ppt_cat)
 
 # compute all summary rows
 summarise_stratum <- function(data) {
@@ -146,17 +147,45 @@ summarise_stratum <- function(data) {
   )
 }
 
+# city-wide daily aggregate for Overall column
+total_pop <- sum(borough_pop$population)
+
+citywide_dat <- final_dat |>
+  group_by(date) |>
+  summarise(
+    asthma_er_count = sum(asthma_er_count, na.rm = TRUE),
+    ppt             = mean(ppt, na.rm = TRUE),
+    temp_avg        = first(temp_avg),
+    pollen          = first(pollen),
+    .groups = "drop"
+  ) |>
+  mutate(
+    population    = total_pop,
+    rate_per_100k = asthma_er_count / total_pop * 100000,
+    ppt_cat       = case_when(
+      ppt == 0   ~ "No rain (0 mm)",
+      ppt < p90  ~ paste0("Light (>0 to <", round(p90, 1), " mm)"),
+      ppt < p95  ~ paste0("Moderate (", round(p90, 1), "–<", round(p95, 1), " mm)"),
+      ppt < p99  ~ paste0("Heavy (", round(p95, 1), "–<", round(p99, 1), " mm)"),
+      TRUE       ~ paste0("Very heavy (≥", round(p99, 1), " mm)")
+    ),
+    ppt_cat = factor(ppt_cat, levels = ppt_levels)
+  )
+
 # compute per borough and overall
 strata <- c(boroughs_ordered, "Overall")
 
 summaries <- lapply(strata, function(b) {
-  d <- if (b == "Overall") final_dat else filter(final_dat, borough == b)
-  summarise_stratum(d)
+  d <- if (b == "Overall") citywide_dat else filter(final_dat, borough == b)
+  s <- summarise_stratum(d)
+  if (b == "Overall") {
+    s$population <- formatC(total_pop, format = "d", big.mark = ",")
+    s$n_days     <- nrow(filter(final_dat, borough == "Bronx"))
+  }
+  s
 })
 names(summaries) <- strata
 
-
-ppt_levels <- levels(final_dat$ppt_cat)
 
 # age rows
 age_levels <- c("Ages 0–4", "Ages 5–17", "Ages 18–64", "Ages 65+")
@@ -209,7 +238,6 @@ for (b in strata) {
 ```{r render-table}
 # rows can be grouped
 n_age <- length(age_levels)
-n_ppt <- length(ppt_levels)
 
 n_outcome <- 1 + n_age + 3  # visits header + age rows + rate + temp + pollen
 
