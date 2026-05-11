@@ -1,0 +1,267 @@
+---
+title: "Descriptive Statistics for Paper"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+```{r load-packages}
+library(tidyverse)
+library(lubridate)
+library(gt)
+library(gtExtras)
+```
+
+```{r load-data}
+asthma_precip_pm25 <- read_csv("datasets/asthma_precip_pm25_clean.csv") |>
+  mutate(date = as.Date(date))
+
+temp_raw <- read_csv("datasets/daily_temp_nyc.csv") |>
+  mutate(
+    date     = as.Date(DATE),
+    temp_avg = (as.numeric(TMAX) + as.numeric(TMIN)) / 2
+  ) |>
+  select(date, temp_avg)
+
+# borough populations (2016–2019 average, persons)
+borough_pop <- tribble(
+  ~borough,        ~population,
+  "Bronx",         1432132,
+  "Brooklyn",      2582830,
+  "Manhattan",     1628701,
+  "Queens",        2278906,
+  "Staten Island",  476179
+)
+
+final_dat <- asthma_precip_pm25 |>
+  left_join(temp_raw, by = "date") |>
+  left_join(borough_pop, by = "borough") |>
+  mutate(
+    rate_per_100k = asthma_er_count / population * 100000
+  )
+
+# pollen data (city-wide)
+pollen_dat <- read_csv("datasets/asthma_precip_pm25_pollen.csv") |>
+  mutate(date = as.Date(date)) |>
+  select(date, pollen)
+
+final_dat <- final_dat |>
+  left_join(pollen_dat, by = "date")
+
+# age-stratified data (city-wide, summed across boroughs)
+age_dat <- read_csv("asthma_precip_age.csv") |>
+  mutate(date = as.Date(date)) |>
+  filter(age != "All age groups") |>
+  mutate(age = case_when(
+    age == "Ages 0-4 years"   ~ "Ages 0–4",
+    age == "Ages 5-17 years"  ~ "Ages 5–17",
+    age == "Ages 18-64 years" ~ "Ages 18–64",
+    age == "Ages 65+ years"   ~ "Ages 65+",
+    TRUE                      ~ age
+  )) |>
+  group_by(date, age) |>
+  summarise(asthma_er_count = sum(asthma_er_count, na.rm = TRUE), .groups = "drop")
+```
+
+```{r precipitation-categories}
+# compute city-wide percentile thresholds from all non-zero days,
+# matching the dlnm analysis approach
+p90 <- quantile(final_dat$ppt, 0.90, na.rm = TRUE)
+p95 <- quantile(final_dat$ppt, 0.95, na.rm = TRUE)
+p99 <- quantile(final_dat$ppt, 0.99, na.rm = TRUE)
+
+cat(sprintf(
+  "Precipitation thresholds (city-wide):\n  90th pct: %.2f mm\n  95th pct: %.2f mm\n  99th pct: %.2f mm\n",
+  p90, p95, p99
+))
+
+final_dat <- final_dat |>
+  mutate(
+    ppt_cat = case_when(
+      ppt == 0              ~ "No rain (0 mm)",
+      ppt < p90             ~ paste0("Light (>0 to <", round(p90, 1), " mm)"),
+      ppt < p95             ~ paste0("Moderate (", round(p90, 1), "–<", round(p95, 1), " mm)"),
+      ppt < p99             ~ paste0("Heavy (", round(p95, 1), "–<", round(p99, 1), " mm)"),
+      TRUE                  ~ paste0("Very heavy (≥", round(p99, 1), " mm)")
+    ),
+    ppt_cat = factor(ppt_cat, levels = c(
+      paste0("No rain (0 mm)"),
+      paste0("Light (>0 to <", round(p90, 1), " mm)"),
+      paste0("Moderate (", round(p90, 1), "–<", round(p95, 1), " mm)"),
+      paste0("Heavy (", round(p95, 1), "–<", round(p99, 1), " mm)"),
+      paste0("Very heavy (≥", round(p99, 1), " mm)")
+    ))
+  )
+```
+
+```{r}
+# written as median (Q1, Q3)
+fmt_median_iqr <- function(x) {
+  x <- x[!is.na(x)]
+  sprintf("%.1f (%.1f, %.1f)", median(x), quantile(x, 0.25), quantile(x, 0.75))
+}
+
+# written as mean ± SD
+fmt_mean_sd <- function(x) {
+  x <- x[!is.na(x)]
+  sprintf("%.1f ± %.1f", mean(x), sd(x))
+}
+
+# n written as %
+fmt_n_pct <- function(n, total) {
+  sprintf("%d (%.1f%%)", n, 100 * n / total)
+}
+```
+
+```{r build-table-data}
+boroughs_ordered <- c("Bronx", "Brooklyn", "Manhattan", "Queens", "Staten Island")
+
+# compute all summary rows
+summarise_stratum <- function(data) {
+  n_days        <- nrow(data)
+  pop_val       <- round(mean(data$population, na.rm = TRUE))
+  visits_miqr   <- fmt_median_iqr(data$asthma_er_count)
+  rate_msd      <- fmt_mean_sd(data$rate_per_100k)
+  temp_msd      <- fmt_mean_sd(data$temp_avg)
+  pollen_msd    <- fmt_mean_sd(data$pollen)
+
+  # ppt category counts
+  ppt_counts <- data |>
+    count(ppt_cat, .drop = FALSE) |>
+    mutate(fmt = fmt_n_pct(n, n_days))
+
+  list(
+    n_days      = n_days,
+    population  = formatC(pop_val, format = "d", big.mark = ","),
+    visits_miqr = visits_miqr,
+    rate_msd    = rate_msd,
+    temp_msd    = temp_msd,
+    ppt_counts  = ppt_counts,
+    pollen_msd  = pollen_msd
+  )
+}
+
+# compute per borough and overall
+strata <- c(boroughs_ordered, "Overall")
+
+summaries <- lapply(strata, function(b) {
+  d <- if (b == "Overall") final_dat else filter(final_dat, borough == b)
+  summarise_stratum(d)
+})
+names(summaries) <- strata
+
+
+ppt_levels <- levels(final_dat$ppt_cat)
+
+# age rows
+age_levels <- c("Ages 0–4", "Ages 5–17", "Ages 18–64", "Ages 65+")
+
+age_summary <- age_dat |>
+  group_by(age) |>
+  summarise(fmt = fmt_median_iqr(asthma_er_count), .groups = "drop") |>
+  mutate(age = factor(age, levels = age_levels)) |>
+  arrange(age)
+
+# build long table rows
+row_labels <- c(
+  "Person-days",
+  "Population",
+  "Daily asthma ED visits, median (IQR)",
+  paste0("  ", age_levels),
+  "Asthma ED rate per 100,000, mean ± SD",
+  "Daily mean temperature (°F), mean ± SD",
+  "Daily pollen count, mean ± SD",
+  paste0("  ", ppt_levels)
+)
+
+make_col <- function(s) {
+  ppt_row <- s$ppt_counts |>
+    arrange(ppt_cat) |>
+    pull(fmt)
+
+  c(
+    as.character(s$n_days),
+    s$population,
+    s$visits_miqr,
+    age_summary$fmt,   # same city-wide values repeated across borough columns
+    s$rate_msd,
+    s$temp_msd,
+    s$pollen_msd,
+    ppt_row
+  )
+}
+
+table_df <- data.frame(
+  Characteristic = row_labels,
+  stringsAsFactors = FALSE
+)
+
+for (b in strata) {
+  table_df[[b]] <- make_col(summaries[[b]])
+}
+```
+
+```{r render-table}
+# rows can be grouped
+n_age <- length(age_levels)
+n_ppt <- length(ppt_levels)
+
+n_outcome <- 1 + n_age + 3  # visits header + age rows + rate + temp + pollen
+
+table_df <- table_df |>
+  mutate(
+    group = case_when(
+      row_number() <= 2                        ~ "Study period",
+      row_number() <= 2 + n_outcome            ~ "Outcome & covariates",
+      TRUE                                     ~ "Precipitation exposure"
+    )
+  )
+
+table_df$Characteristic <- trimws(table_df$Characteristic)
+
+table_df |>
+  gt(groupname_col = "group") |>
+  tab_header(
+    title    = "Table 1. Descriptive Statistics by NYC Borough, 2016–2019",
+    subtitle = "Precipitation categories based on city-wide percentile thresholds"
+  ) |>
+  tab_spanner(
+    label   = "Borough",
+    columns = all_of(boroughs_ordered)
+  ) |>
+  cols_label(
+    Characteristic  = "Characteristic",
+    Bronx           = "Bronx",
+    Brooklyn        = "Brooklyn",
+    Manhattan       = "Manhattan",
+    Queens          = "Queens",
+    `Staten Island` = "Staten Island",
+    Overall         = "Overall"
+  ) |>
+  tab_style(
+    style = cell_text(indent = px(15)),
+    locations = cells_body(
+      columns = Characteristic,
+      rows    = Characteristic %in% c(trimws(ppt_levels), age_levels)
+    )
+  ) |>
+  tab_style(
+    style = list(cell_fill(color = "#f7f7f7"), cell_text(weight = "bold")),
+    locations = cells_row_groups()
+  ) |>
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_column_labels()
+  ) |>
+  opt_table_font(font = "Times New Roman") |>
+  tab_options(
+    table.width              = pct(100),
+    column_labels.font.size  = px(13),
+    table.font.size          = px(12),
+    row_group.font.size      = px(13),
+    heading.title.font.size  = px(14),
+    heading.subtitle.font.size = px(12)
+  )
+```
