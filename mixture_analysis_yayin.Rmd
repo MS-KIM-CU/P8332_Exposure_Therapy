@@ -78,6 +78,8 @@ write_csv(final_dataset, "final_dataset.csv")
 ## PM 2.5, pollen, ppt distribution
 ```{r}
 
+final_dataset <- final_dataset %>%
+  mutate(pollen = replace_na(pollen, 0))
 # Plot distributions
 data_long2 <- final_dataset %>%
   select(avg_pm25, pollen, avg_ppt) %>%
@@ -95,6 +97,7 @@ ggplot(data_long2, aes(x = value, fill = variable)) +
        x = "Value",
        y = "Count") +
   theme_minimal()
+
 
 # Take natural log of each variable, adding a small constant to avoid log(0)
 pca <- final_dataset %>%
@@ -194,11 +197,12 @@ scores.constituent$date <- pca$date
 head(scores.constituent)
 ```
 
-## Regression
+#Using PC predictors for quasi-poisson regression
 
 ```{r}
 
-### Join pca data with constituent scores
+
+#join PCA data
 # Check for duplicates
 pca %>% count(date) %>% filter(n > 1)
 scores.constituent %>% count(date) %>% filter(n > 1)
@@ -224,15 +228,398 @@ pca <-pca %>%
   ) %>%
   select(-month)
 
-#regression 
-model <- lm(total_asthma_er ~ PC1 + PC2 + PC3 + season, data = pca)
+library(MASS)
+
+# Poisson regression (season adjusted)
+model <- glm(total_asthma_er ~ PC1 + PC2 + PC3 + season,
+             family = poisson(link = "log"),
+             data = pca)
 
 summary(model)
 
+
+
+# Poisson regression (no season)
+model_no_season <- glm(total_asthma_er ~ PC1 + PC2 + PC3,
+                       family = poisson(link = "log"),
+                       data = pca)
+
+summary(model_no_season)
+
 ```
 
+#quasi poisson visualization
+
+```{r}
+
+#Quasi-Poisson regression comparison
+library(gt)
+library(broom)
+library(dplyr)
+
+select <- dplyr::select
+filter <- dplyr::filter
+
+# Tidy both models
+tidy_m1 <- tidy(model_no_season, exponentiate = TRUE, conf.int = TRUE) %>% 
+  mutate(model = "no_season")
+tidy_m2 <- tidy(model, exponentiate = TRUE, conf.int = TRUE) %>% 
+  mutate(model = "season")
+
+# Wide format: one row per term
+comparison_wide <- bind_rows(tidy_m1, tidy_m2) %>%
+  select(model, term, estimate, conf.low, conf.high, p.value) %>%
+  pivot_wider(
+    names_from  = model,
+    values_from = c(estimate, conf.low, conf.high, p.value)
+  ) %>%
+  mutate(
+    term = recode(term,
+      "(Intercept)"  = "Intercept",
+      "PC1"          = "PC1",
+      "PC2"          = "PC2",
+      "PC3"          = "PC3",
+      "seasonSpring" = "Spring",
+      "seasonSummer" = "Summer",
+      "seasonFall"   = "Fall"
+    )
+  )
+
+# add sig columns to comparison_wide before gt
+comparison_wide <- comparison_wide %>%
+  mutate(
+    sig_no_season = !is.na(p.value_no_season) & p.value_no_season < 0.05,
+    sig_season    = !is.na(p.value_season)    & p.value_season    < 0.05
+  )
+
+comparison_wide %>%
+  gt() %>%
+  tab_header(
+    title    = "Air Quality, Pollen, and Precipitation Components as Predictors of Daily Asthma Emergency Room Visits: Unadjusted and Season-Adjusted Poisson Regression Models",
+    subtitle = "Outcome: Total daily asthma ER visits | Estimates expressed as Incidence Rate Ratios (IRR)"
+  ) %>%
+  cols_label(
+    term                = "Term",
+    estimate_no_season  = "IRR",
+    conf.low_no_season  = "95% CI (low)",
+    conf.high_no_season = "95% CI (high)",
+    p.value_no_season   = "p-value",
+    estimate_season     = "IRR",
+    conf.low_season     = "95% CI (low)",
+    conf.high_season    = "95% CI (high)",
+    p.value_season      = "p-value"
+  ) %>%
+  cols_hide(c(sig_no_season, sig_season)) %>%
+  tab_spanner(label = "Model 1: No Season",
+              columns = c(estimate_no_season, conf.low_no_season, conf.high_no_season, p.value_no_season)) %>%
+  tab_spanner(label = "Model 2: Season Adjusted",
+              columns = c(estimate_season, conf.low_season, conf.high_season, p.value_season)) %>%
+  fmt_number(
+    columns  = c(estimate_no_season, conf.low_no_season, conf.high_no_season,
+                 estimate_season, conf.low_season, conf.high_season),
+    decimals = 3
+  ) %>%
+  fmt(
+    columns = c(p.value_no_season, p.value_season),
+    fns = function(x) {
+      case_when(
+        is.na(x)  ~ "—",
+        x < 0.001 ~ "<0.001",
+        TRUE      ~ formatC(x, digits = 3, format = "f")
+      )
+    }
+  ) %>%
+  tab_style(
+    style     = cell_text(weight = "bold"),
+    locations = cells_body(
+      columns = p.value_no_season,
+      rows    = sig_no_season == TRUE
+    )
+  ) %>%
+  tab_style(
+    style     = cell_text(weight = "bold"),
+    locations = cells_body(
+      columns = p.value_season,
+      rows    = sig_season == TRUE
+    )
+  ) %>%
+  tab_footnote("Bold p-values indicate p < 0.05. Season reference category: Winter (Model 2 only).") %>%
+  tab_footnote("IRR = Incidence Rate Ratio. Estimates and CIs are exponentiated from log-scale Poisson coefficients.") %>%
+  gtsave("regression_comparison.png", vwidth = 1400, expand = 30, zoom = 2)
+```
+
+#Sensitvity analysis
+```{r}
+#temperature variable
+temp_daily <- read_csv("daily_temp_nyc.csv") |>
+  mutate(
+    date     = as.Date(DATE),
+    temp_avg = (TMAX / 10 + TMIN / 10) / 2
+  ) |>
+  select(date, temp_avg)
+
+pca <- pca %>%
+  left_join(temp_daily %>% 
+              dplyr::select(date, temp_avg) %>% 
+              distinct(date, .keep_all = TRUE), 
+            by = "date")
+
+
+# Poisson controlling for temperature instead of season
+model_temp <- glm(total_asthma_er ~ PC1 + PC2 + PC3 + temp_avg,
+                  family = poisson(link = "log"),
+                  data = pca)
+
+summary(model_temp)
 
 
 
+#Days of the week variable
+pca <- pca %>%
+  mutate(dow = factor(weekdays(date), 
+                      levels = c("Monday", "Tuesday", "Wednesday", 
+                                 "Thursday", "Friday", "Saturday", "Sunday")))
+
+# Sensitivity: controlling for day of week instead of season
+model_dow <- glm(total_asthma_er ~ PC1 + PC2 + PC3 + dow,
+                 family = poisson(link = "log"),
+                 data = pca)
+
+summary(model_dow)
+exp(coef(model_dow))
+
+# Sensitivity controlling for months
+pca1 <- pca %>%
+  mutate(
+    time  = as.numeric(date - min(date)),
+    month = factor(month(date), 
+                   levels = 1:12, 
+                   labels = c("Jan","Feb","Mar","Apr","May","Jun",
+                              "Jul","Aug","Sep","Oct","Nov","Dec"))
+  )
+model_month  <- glm(total_asthma_er ~ PC1 + PC2 + PC3 + month,
+                 family = poisson(link = "log"),
+                 data = pca1)
+summary(model_month)
+model_trend  <- glm(total_asthma_er ~ PC1 + PC2 + PC3 + time,
+                 family = poisson(link = "log"),
+                 data = pca1)
+
+
+```
+
+#sensitvity analysis visualization
+```{r}
+
+library(gt)
+library(broom)
+library(dplyr)
+
+
+
+# run all sensitivity models
+model_temp  <- glm(total_asthma_er ~ PC1 + PC2 + PC3 + temp_avg, family = poisson(link = "log"), data = pca)
+model_dow   <- glm(total_asthma_er ~ PC1 + PC2 + PC3 + dow,      family = poisson(link = "log"), data = pca)
+model_time  <- glm(total_asthma_er ~ PC1 + PC2 + PC3 + time,     family = poisson(link = "log"), data = pca1)
+model_month <- glm(total_asthma_er ~ PC1 + PC2 + PC3 + month,    family = poisson(link = "log"), data = pca1)
+
+# tidy and keep only PC rows
+tidy_model <- function(mod, label) {
+  tidy(mod, exponentiate = TRUE, conf.int = TRUE) %>%
+    dplyr::filter(term %in% c("PC1", "PC2", "PC3")) %>%
+    dplyr::select(term, estimate, conf.low, conf.high, p.value) %>%
+    mutate(model = label)
+}
+
+sensitivity_long <- bind_rows(
+  tidy_model(model,       "Season"),
+  tidy_model(model_temp,  "Temperature"),
+  tidy_model(model_dow,   "Day of Week"),
+  tidy_model(model_month, "Month")
+)
+
+# wide: one row per PC, one set of columns per model
+sensitivity_wide <- sensitivity_long %>%
+  pivot_wider(
+    names_from  = model,
+    values_from = c(estimate, conf.low, conf.high, p.value)
+  )
+
+# helper to format p-values
+fmt_p <- function(x) {
+  case_when(
+    is.na(x)  ~ "—",
+    x < 0.001 ~ "<0.001",
+    TRUE       ~ formatC(x, digits = 3, format = "f")
+  )
+}
+
+# build gt table
+sensitivity_wide %>%
+  gt() %>%
+  tab_header(
+    title    = "Sensitivity Analysis: Poisson Regression of Daily Asthma ER Visits",
+    subtitle = "PC1–PC3 IRRs across alternative confounder adjustments"
+  ) %>%
+  tab_spanner(label = "Season",      columns = ends_with("Season"))      %>%
+  tab_spanner(label = "Temperature", columns = ends_with("Temperature")) %>%
+  tab_spanner(label = "Day of Week", columns = ends_with("Day of Week")) %>%
+  tab_spanner(label = "Month",       columns = ends_with("Month"))       %>%
+  cols_label(
+    term                      = "Term",
+    estimate_Season           = "IRR", conf.low_Season           = "95% CI low", conf.high_Season           = "95% CI high", p.value_Season           = "p",
+    estimate_Temperature      = "IRR", conf.low_Temperature      = "95% CI low", conf.high_Temperature      = "95% CI high", p.value_Temperature      = "p",
+    `estimate_Day of Week`    = "IRR", `conf.low_Day of Week`    = "95% CI low", `conf.high_Day of Week`    = "95% CI high", `p.value_Day of Week`    = "p",
+    estimate_Month            = "IRR", conf.low_Month            = "95% CI low", conf.high_Month            = "95% CI high", p.value_Month            = "p"
+  ) %>%
+  fmt_number(
+    columns  = starts_with("estimate") | starts_with("conf.low") | starts_with("conf.high"),
+    decimals = 3
+  ) %>%
+  fmt(
+    columns = starts_with("p.value"),
+    fns     = fmt_p
+  ) %>%
+  tab_style(
+    style     = cell_text(weight = "bold"),
+    locations = cells_column_spanners()
+  ) %>%
+  tab_footnote("IRR = Incidence Rate Ratio. All models include PC1, PC2, PC3. Reference: Season = Winter; Day of Week = Monday.") %>%
+  tab_footnote("p-values: <0.001 denoted explicitly; bold indicates p < 0.05.") %>%
+  tab_style(
+    style     = cell_text(weight = "bold"),
+    locations = cells_body(
+      columns = starts_with("p.value"),
+      rows    = (p.value_Season < 0.05           & !is.na(p.value_Season))           |
+                (p.value_Temperature < 0.05      & !is.na(p.value_Temperature))      |
+                (`p.value_Day of Week` < 0.05    & !is.na(`p.value_Day of Week`))    |
+                (p.value_Month < 0.05            & !is.na(p.value_Month))
+    )
+  ) %>%
+  gtsave("sensitivity_analysis.png", 
+       vwidth = 2400,
+       vheight = 900,
+       expand = 30,
+       zoom = 2)
+
+# confounder significance table
+tidy_confounders <- bind_rows(
+  tidy(model,       exponentiate = TRUE, conf.int = TRUE) %>% mutate(model = "Season"),
+  tidy(model_temp,  exponentiate = TRUE, conf.int = TRUE) %>% mutate(model = "Temperature"),
+  tidy(model_dow,   exponentiate = TRUE, conf.int = TRUE) %>% mutate(model = "Day of Week"),
+  tidy(model_month, exponentiate = TRUE, conf.int = TRUE) %>% mutate(model = "Month")
+) %>%
+  dplyr::filter(!term %in% c("PC1", "PC2", "PC3", "(Intercept)")) %>%
+  dplyr::select(model, term, estimate, conf.low, conf.high, p.value) %>%
+  mutate(p_fmt = fmt_p(p.value))
+
+tidy_confounders %>%
+  gt(groupname_col = "model") %>%
+  tab_header(
+    title    = "Sensitivity Analysis: Confounder Term Significance",
+    subtitle = "IRRs for confounder variables across all sensitivity models"
+  ) %>%
+  cols_label(
+    term      = "Term",
+    estimate  = "IRR",
+    conf.low  = "95% CI low",
+    conf.high = "95% CI high",
+    p.value   = "p-value",
+    p_fmt     = "p (formatted)"
+  ) %>%
+  cols_hide(p.value) %>%
+  fmt_number(columns = c(estimate, conf.low, conf.high), decimals = 3) %>%
+  tab_style(
+    style     = cell_text(weight = "bold"),
+    locations = cells_row_groups()
+  ) %>%
+  tab_style(
+    style     = cell_text(weight = "bold"),
+    locations = cells_body(
+      columns = p_fmt,
+      rows    = p.value < 0.05 & !is.na(p.value)
+    )
+  ) %>%
+  tab_footnote("Bold p-values indicate p < 0.05. IRR = Incidence Rate Ratio.") %>%
+  gtsave("sensitivity_confounders.png", vwidth = 1200, vheight = 1600, expand = 30, zoom = 2)
+
+```
+
+```{r}
+
+tidy_all <- bind_rows(
+  tidy(model,       exponentiate = TRUE, conf.int = TRUE) %>% mutate(model = "Season"),
+  tidy(model_temp,  exponentiate = TRUE, conf.int = TRUE) %>% mutate(model = "Temperature"),
+  tidy(model_dow,   exponentiate = TRUE, conf.int = TRUE) %>% mutate(model = "Day of Week"),
+  tidy(model_month, exponentiate = TRUE, conf.int = TRUE) %>% mutate(model = "Month")
+) %>%
+  dplyr::filter(term != "(Intercept)") %>%
+  dplyr::select(model, term, estimate, conf.low, conf.high, p.value) %>%
+  mutate(
+    term = recode(term,
+      "PC1"            = "PC1",
+      "PC2"            = "PC2",
+      "PC3"            = "PC3",
+      "avg_temp"       = "Temperature (avg)",
+      "time"           = "Time trend",
+      "seasonSpring"   = "Spring",
+      "seasonSummer"   = "Summer",
+      "seasonFall"     = "Fall",
+      "dowTuesday"     = "Tuesday",
+      "dowWednesday"   = "Wednesday",
+      "dowThursday"    = "Thursday",
+      "dowFriday"      = "Friday",
+      "dowSaturday"    = "Saturday",
+      "dowSunday"      = "Sunday",
+      "monthFeb"       = "February",
+      "monthMar"       = "March",
+      "monthApr"       = "April",
+      "monthMay"       = "May",
+      "monthJun"       = "June",
+      "monthJul"       = "July",
+      "monthAug"       = "August",
+      "monthSep"       = "September",
+      "monthOct"       = "October",
+      "monthNov"       = "November",
+      "monthDec"       = "December"
+    ),
+    p_fmt = fmt_p(p.value)
+  )
+
+tidy_all %>%
+  dplyr::select(model, term, estimate, conf.low, conf.high, p.value, p_fmt) %>%
+  gt(groupname_col = "model") %>%
+  tab_header(
+    title    = "Sensitivity Analysis: Poisson Regression of Daily Asthma ER Visits",
+    subtitle = "All terms across alternative confounder adjustments | IRR (95% CI)"
+  ) %>%
+  cols_label(
+    term      = "Term",
+    estimate  = "IRR",
+    conf.low  = "95% CI low",
+    conf.high = "95% CI high",
+    p_fmt     = "p-value"
+  ) %>%
+  cols_hide(p.value) %>%
+  fmt_number(columns = c(estimate, conf.low, conf.high), decimals = 3) %>%
+  tab_style(
+    style     = cell_fill(color = "#f0f0f0"),
+    locations = cells_row_groups()
+  ) %>%
+  tab_style(
+    style     = cell_text(weight = "bold"),
+    locations = cells_row_groups()
+  ) %>%
+  tab_style(
+    style     = cell_text(weight = "bold"),
+    locations = cells_body(
+      columns = p_fmt,
+      rows    = p.value < 0.05 & !is.na(p.value)
+    )
+  ) %>%
+  tab_footnote("IRR = Incidence Rate Ratio. Reference categories: Season = Winter; Day of Week = Monday; Month = January.") %>%
+  tab_footnote("Bold p-values indicate p < 0.05.") %>%
+  gtsave("sensitivity_analysis_full.png", vwidth = 1000, vheight = 3000, expand = 30, zoom = 2)
+```
 
 
