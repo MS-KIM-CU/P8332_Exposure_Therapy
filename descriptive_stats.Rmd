@@ -124,7 +124,7 @@ ppt_levels <- levels(final_dat$ppt_cat)
 
 # compute all summary rows
 summarise_stratum <- function(data) {
-  n_days        <- nrow(data)
+  n_days        <- n_distinct(data$date)
   pop_val       <- round(mean(data$population, na.rm = TRUE))
   visits_miqr   <- fmt_median_iqr(data$asthma_er_count)
   rate_msd      <- fmt_mean_sd(data$rate_per_100k)
@@ -180,7 +180,9 @@ summaries <- lapply(strata, function(b) {
   s <- summarise_stratum(d)
   if (b == "Overall") {
     s$population <- formatC(total_pop, format = "d", big.mark = ",")
-    s$n_days     <- nrow(filter(final_dat, borough == "Bronx"))
+    s$n_days     <- nrow(citywide_dat)
+    s$temp_msd   <- fmt_mean_sd(filter(final_dat, borough == "Bronx")$temp_avg)
+    s$pollen_msd <- fmt_mean_sd(filter(final_dat, borough == "Bronx")$pollen)
   }
   s
 })

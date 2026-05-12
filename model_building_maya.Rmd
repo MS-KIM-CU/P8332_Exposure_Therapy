@@ -607,10 +607,6 @@ sens_table |>
   fmt(columns = p, fns = function(x) ifelse(is.na(x), "—", ifelse(x < 0.001, "<0.001", sprintf("%.3f", x)))) |>
   fmt(columns = c(RR, CI), fns = function(x) ifelse(is.na(x), "—", as.character(x))) |>
   tab_style(
-    style     = cell_fill(color = "lightblue"),
-    locations = cells_body(rows = 1)
-  ) |>
-  tab_style(
     style     = cell_text(indent = px(15)),
     locations = cells_body(rows = Model %in% cat_rows$Model)
   ) |>
